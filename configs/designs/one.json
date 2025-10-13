@@ -1,0 +1,80 @@
+{
+ "system_specification": {
+  "name": "Multi-Agent RAG System",
+  "version": "2.0",
+  "architecture": "refiner"
+ },
+ "nodes": [
+  {
+   "id": 1,
+   "type": "refiner",
+   "pos": [
+    100,
+    100
+   ]
+  }
+ ],
+ "connections": [],
+ "node_thresholds": {
+  "1": {
+   "min_answer_length": {
+    "value": 1000
+   },
+   "max_answer_length": {
+    "value": 1500
+   },
+   "enable_regeneration": {
+    "value": false
+   },
+   "llm_max_tokens": {
+    "value": 16000
+   },
+   "use_code_blocks": {
+    "value": false
+   },
+   "include_citations": {
+    "value": false
+   },
+   "structure_with_headers": {
+    "value": false
+   },
+   "technical_terminology": {
+    "value": "preserve"
+   },
+   "expert_attribution": {
+    "value": false
+   },
+   "response_format": {
+    "value": "user_manual"
+   },
+   "output_structure": {
+    "value": {
+     "response_format": "user_manual",
+     "sections": [],
+     "formatting_rules": {
+      "use_code_blocks": false,
+      "include_citations": false,
+      "structure_with_headers": false,
+      "expert_attribution": false,
+      "technical_terminology": "preserve"
+     }
+    }
+   },
+   "llm_prompts": {
+    "value": {
+     "generation_instruction": "以下の構成で{min_answer_length}文字以上{max_answer_length}文字以下のユーザーフレンドリーな回答を示してください。",
+     "section_instruction": "",
+     "output_format": "技術的観点がある場合は多面的なな視点で回答し、世間話はユーザーに寄り添った回答をしてください。",
+     "integration_focus": "",
+     "code_generation_focus": ""
+    }
+   }
+  }
+ },
+ "logging": {
+  "default_level": "VERBOSE",
+  "node_specific_levels": {
+   "1": "VERBOSE"
+  }
+ }
+}

@@ -1,0 +1,510 @@
+{
+ "system_specification": {
+  "name": "Multi-Agent RAG System",
+  "version": "2.0",
+  "architecture": "analyzer->parallel_retrievers->parallel_domain_experts->validator->router->(conditional_routing)->refiner"
+ },
+ "nodes": [
+  {
+   "id": 1,
+   "type": "analyzer",
+   "pos": [
+    9.0,
+    81.0
+   ]
+  },
+  {
+   "id": 2,
+   "type": "retriever",
+   "pos": [
+    158.0,
+    61.0
+   ]
+  },
+  {
+   "id": 3,
+   "type": "retriever",
+   "pos": [
+    160,
+    160
+   ]
+  },
+  {
+   "id": 4,
+   "type": "domain_expert",
+   "pos": [
+    300.0,
+    72.0
+   ]
+  },
+  {
+   "id": 5,
+   "type": "domain_expert",
+   "pos": [
+    293.0,
+    166.0
+   ]
+  },
+  {
+   "id": 6,
+   "type": "validator",
+   "pos": [
+    450.0,
+    133.0
+   ]
+  },
+  {
+   "id": 7,
+   "type": "refiner",
+   "pos": [
+    702.0,
+    136.0
+   ]
+  },
+  {
+   "id": 8,
+   "type": "router",
+   "pos": [
+    590.0,
+    250.0
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "from": 1,
+   "to": 2
+  },
+  {
+   "from": 1,
+   "to": 3
+  },
+  {
+   "from": 2,
+   "to": 4
+  },
+  {
+   "from": 3,
+   "to": 5
+  },
+  {
+   "from": 4,
+   "to": 6
+  },
+  {
+   "from": 5,
+   "to": 6
+  },
+  {
+   "from": 6,
+   "to": 8
+  },
+  {
+   "from": 8,
+   "to": 1,
+   "condition": "condition_1",
+   "condition_details": {
+    "checks": [
+     {
+      "field": "validation_confidence_6",
+      "operator": "lt",
+      "threshold": "0.6"
+     },
+     {
+      "field": "confidence_2",
+      "operator": "lt",
+      "threshold": "0.6"
+     },
+     {
+      "field": "confidence_2",
+      "operator": "lt",
+      "threshold": "0.6"
+     }
+    ],
+    "custom_expression": "[1] or [2] or [3]",
+    "description": "条件1",
+    "target_node": 1
+   }
+  },
+  {
+   "from": 8,
+   "to": 7,
+   "condition": "default",
+   "condition_details": {
+    "description": "Default route to: node_7",
+    "decision": "proceed_to_target",
+    "target_node": 7
+   }
+  },
+  {
+   "from": 8,
+   "to": 7,
+   "condition": "max_iterations_exceeded",
+   "condition_details": {
+    "description": "Max iterations exceeded route to: node_7",
+    "decision": "max_iterations_exceeded",
+    "target_node": 7
+   }
+  }
+ ],
+ "node_thresholds": {
+  "1": {
+   "analysis_depth": {
+    "value": "comprehensive"
+   },
+   "llm_prompts": {
+    "value": {
+     "base_instruction": "以下のユーザー入力を分析し、Modelica技術検索に最適化されたクエリを生成してください。実行履歴がある場合は前回の結果を改善してください。",
+     "optimization_focus": "Modelica専門用語の保持、技術コンテキストの明確化、AST・PDF両方での検索効率最大化、前回の不備改善を重視してください。",
+     "output_format": "JSON形式で intent, complexity, optimized_query, sources, confidence, improvement_applied を必須出力してください。",
+     "quality_criteria": "技術的正確性、検索適合性、実装可能性、前回フィードバック反映を最優先に分析してください。",
+     "query_optimization_rules": "1. 元の質問の核心的な意味とニュアンスを保持\n2. 冗長な依頼語を除去し、技術用語は保持\n3. 技術文脈・対象範囲を自然に表現\n4. 固有名詞・API/クラス/関数名を保持\n5. AST・PDF両方に適応するキーワードを埋め込む\n6. 前回の不備や推奨改善点を反映"
+    }
+   },
+   "final_prompt_template": {
+    "value": "{base_instruction}\n\n{optimization_focus}\n\n{quality_criteria}\n\n【クエリ最適化ルール】\n{query_optimization_rules}\n\n分析深度: {analysis_depth}\n{context_section}\n\nユーザー入力: \"{user_input}\"\n\n{output_format}:\n{{\n\"intent\": \"質問の意図\",\n\"complexity\": \"simple/medium/complex\", \n\"optimized_query\": \"検索最適化されたクエリ\",\n\"sources\": [\"ast_data: プログラム構造\", \"pdf_documents: 文献\", \"both: 両方\"],\n\"confidence\": 0.0-1.0の信頼度\n}}"
+   }
+  },
+  "2": {
+   "target_collections": {
+    "value": "rag_documents_pdf"
+   },
+   "search_k": {
+    "value": 6
+   },
+   "initial_k": {
+    "value": 50
+   },
+   "similarity_threshold": {
+    "value": 0.2
+   },
+   "use_reranker": {
+    "value": true
+   },
+   "reranker_model": {
+    "value": "BAAI/bge-reranker-large"
+   }
+  },
+  "3": {
+   "target_collections": {
+    "value": "rag_documents_ast"
+   },
+   "search_k": {
+    "value": 6
+   },
+   "initial_k": {
+    "value": 50
+   },
+   "similarity_threshold": {
+    "value": 0.20000000298023224
+   },
+   "use_reranker": {
+    "value": true
+   },
+   "reranker_model": {
+    "value": "BAAI/bge-reranker-large"
+   }
+  },
+  "4": {
+   "expertise_domain": {
+    "value": "Modelicaライブラリ"
+   },
+   "expert_profile": {
+    "value": {
+     "specialization": "標準ライブラリ・カスタムライブラリ・コンポーネント設計・パッケージ構造",
+     "knowledge_areas": [
+      "MSL",
+      "Buildings",
+      "PowerSystems",
+      "Fluid",
+      "Thermal",
+      "Electrical",
+      "Mechanics"
+     ],
+     "analysis_focus": "ライブラリ活用・コンポーネント選択・モデル構築・パラメータ設定"
+    }
+   },
+   "max_context_chars": {
+    "value": 12000
+   },
+   "min_facts_count": {
+    "value": 3
+   },
+   "min_insights_count": {
+    "value": 2
+   },
+   "max_boost_over_retriever": {
+    "value": 0.25
+   },
+   "max_expert_confidence": {
+    "value": 0.92
+   },
+   "min_facts_for_bonus": {
+    "value": 7
+   },
+   "facts_bonus": {
+    "value": 0.08
+   },
+   "citation_rate_threshold": {
+    "value": 0.7
+   },
+   "citation_bonus": {
+    "value": 0.08
+   },
+   "min_recommendations_for_bonus": {
+    "value": 6
+   },
+   "recommendations_bonus": {
+    "value": 0.08
+   },
+   "llm_prompts": {
+    "value": {
+     "expert_identity": "あなたは{expertise_domain}の専門家です。{specialization}を専門とし、{knowledge_areas}の知識領域で{analysis_focus}に焦点を当てた分析を行います。",
+     "analysis_instruction": "AST構造データとPDF文献の両方の検索結果を基に、専門的観点から構造化された分析を実施してください。実装可能性と技術的正確性を最重視し、前回の実行結果があれば品質向上に活用してください。",
+     "output_format": "JSON形式で answer(600字以内), facts(10件以内), insights(10件以内), recommendations(10件以内), gaps(10件以内), citations, confidence を必須出力してください。",
+     "confidence_guidance": "前段階の検索品質を基準とし、最大{max_boost_over_retriever}の上乗せで信頼度を設定してください。前回の結果がある場合は改善度も考慮してください。",
+     "quality_focus": "事実の正確性、引用の整合性、推奨事項の実装可能性、技術洞察の深度、AST・PDF情報の統合品質、前回指摘事項の改善を最重視してください。",
+     "content_constraints": "文字数制限: answer<=600字、facts<=10件、insights<=10件、recommendations<=10件、gaps<=10件を厳守してください。"
+    }
+   },
+   "final_prompt_template": {
+    "value": "{expert_identity}\n\n{analysis_instruction}\n\n質問: \"{query}\"\n\n検索結果:\n{search_context}\n\n【信頼度指針】\n{confidence_guidance}\n\n【品質重点】\n{quality_focus}\n\n【制約事項】\n{content_constraints}\n\n【引用整合性重要】\nfacts の cite_ids には必ず検索結果の [引用ID: chunk:xxx:123] の形式で記載してください。\ncitations には検索結果に実際に存在する chunk_id のみを記載してください。\n\n{output_format}:\n{{\n  \"answer\": \"簡潔な回答（≤600字）\",\n  \"facts\": [\n    {{\"statement\": \"主要な事実\", \"cite_ids\": [\"chunk:ast:123\"]}}\n  ],\n  \"insights\": [\"重要な洞察や因果関係\"],\n  \"recommendations\": [\"具体的な推奨事項\"],\n  \"gaps\": [\"不足している情報\"],\n  \"citations\": [\"chunk:ast:123\"],\n  \"confidence\": 0.85\n}}"
+   }
+  },
+  "5": {
+   "expertise_domain": {
+    "value": "Modelicaライブラリ"
+   },
+   "expert_profile": {
+    "value": {
+     "specialization": "標準ライブラリ・カスタムライブラリ・コンポーネント設計・パッケージ構造",
+     "knowledge_areas": [
+      "MSL",
+      "Buildings",
+      "PowerSystems",
+      "Fluid",
+      "Thermal",
+      "Electrical",
+      "Mechanics"
+     ],
+     "analysis_focus": "ライブラリ活用・コンポーネント選択・モデル構築・パラメータ設定"
+    }
+   },
+   "max_context_chars": {
+    "value": 12000
+   },
+   "min_facts_count": {
+    "value": 3
+   },
+   "min_insights_count": {
+    "value": 2
+   },
+   "max_boost_over_retriever": {
+    "value": 0.25
+   },
+   "max_expert_confidence": {
+    "value": 0.92
+   },
+   "min_facts_for_bonus": {
+    "value": 7
+   },
+   "facts_bonus": {
+    "value": 0.08
+   },
+   "citation_rate_threshold": {
+    "value": 0.7
+   },
+   "citation_bonus": {
+    "value": 0.08
+   },
+   "min_recommendations_for_bonus": {
+    "value": 6
+   },
+   "recommendations_bonus": {
+    "value": 0.08
+   },
+   "llm_prompts": {
+    "value": {
+     "expert_identity": "あなたは{expertise_domain}の専門家です。{specialization}を専門とし、{knowledge_areas}の知識領域で{analysis_focus}に焦点を当てた分析を行います。",
+     "analysis_instruction": "AST構造データとPDF文献の両方の検索結果を基に、専門的観点から構造化された分析を実施してください。実装可能性と技術的正確性を最重視し、前回の実行結果があれば品質向上に活用してください。",
+     "output_format": "JSON形式で answer(600字以内), facts(10件以内), insights(10件以内), recommendations(10件以内), gaps(10件以内), citations, confidence を必須出力してください。",
+     "confidence_guidance": "前段階の検索品質を基準とし、最大{max_boost_over_retriever}の上乗せで信頼度を設定してください。前回の結果がある場合は改善度も考慮してください。",
+     "quality_focus": "事実の正確性、引用の整合性、推奨事項の実装可能性、技術洞察の深度、AST・PDF情報の統合品質、前回指摘事項の改善を最重視してください。",
+     "content_constraints": "文字数制限: answer<=600字、facts<=10件、insights<=10件、recommendations<=10件、gaps<=10件を厳守してください。"
+    }
+   },
+   "final_prompt_template": {
+    "value": "{expert_identity}\n\n{analysis_instruction}\n\n質問: \"{query}\"\n\n検索結果:\n{search_context}\n\n【信頼度指針】\n{confidence_guidance}\n\n【品質重点】\n{quality_focus}\n\n【制約事項】\n{content_constraints}\n\n【引用整合性重要】\nfacts の cite_ids には必ず検索結果の [引用ID: chunk:xxx:123] の形式で記載してください。\ncitations には検索結果に実際に存在する chunk_id のみを記載してください。\n\n{output_format}:\n{{\n  \"answer\": \"簡潔な回答（≤600字）\",\n  \"facts\": [\n    {{\"statement\": \"主要な事実\", \"cite_ids\": [\"chunk:ast:123\"]}}\n  ],\n  \"insights\": [\"重要な洞察や因果関係\"],\n  \"recommendations\": [\"具体的な推奨事項\"],\n  \"gaps\": [\"不足している情報\"],\n  \"citations\": [\"chunk:ast:123\"],\n  \"confidence\": 0.85\n}}"
+   }
+  },
+  "6": {
+   "confidence_threshold": {
+    "value": 0.8
+   },
+   "llm_max_tokens": {
+    "value": 600
+   },
+   "minimum_source_count": {
+    "value": 6
+   },
+   "retriever_weight": {
+    "value": 0.15
+   },
+   "expert_weight": {
+    "value": 0.5
+   },
+   "llm_weight": {
+    "value": 0.25
+   },
+   "rule_weight": {
+    "value": 0.1
+   },
+   "llm_prompts": {
+    "value": {
+     "validation_instruction": "以下のModelica専門分析の品質を客観的に評価してください。AST・PDF両方の情報源を活用した統合分析の論理整合性、事実の正確性、引用の妥当性を重点的に検証してください。",
+     "evaluation_criteria": "引用整合性、論理的一貫性、情報源の充足性、技術的妥当性、実装可能性、AST・PDF情報の統合品質を厳格に評価してください。",
+     "output_format": "JSON形式で issues(問題点配列), confidence(0.0-1.0), evidence_assessment(強い証拠|中程度の証拠|弱い証拠), improvement_suggestions(改善提案配列) を必須出力してください。",
+     "confidence_calculation": "段階間連携信頼度計算により、前段階の品質を反映した最終評価を行ってください。"
+    }
+   },
+   "final_prompt_template": {
+    "value": "{validation_instruction}\n\n質問: \"{user_query}\"\n事実: {facts_summary}\n洞察: {insights_summary}\n\n【評価基準】\n{evaluation_criteria}\n\n【信頼度計算指針】\n{confidence_calculation}\n\n{output_format}:\n{{\n\"issues\": [\"品質問題があれば記述、問題なければ空配列\"],\n\"confidence\": 0.75,\n\"evidence_assessment\": \"強い証拠|中程度の証拠|弱い証拠\",\n\"improvement_suggestions\": [\"改善提案があれば記述\"]\n}}"
+   }
+  },
+  "7": {
+   "min_answer_length": {
+    "value": 10000
+   },
+   "max_answer_length": {
+    "value": 15000
+   },
+   "enable_regeneration": {
+    "value": false
+   },
+   "llm_max_tokens": {
+    "value": 16000
+   },
+   "use_code_blocks": {
+    "value": true
+   },
+   "include_citations": {
+    "value": true
+   },
+   "structure_with_headers": {
+    "value": true
+   },
+   "technical_terminology": {
+    "value": "preserve"
+   },
+   "expert_attribution": {
+    "value": true
+   },
+   "response_format": {
+    "value": "technical_documentation"
+   },
+   "output_structure": {
+    "value": {
+     "response_format": "technical_documentation",
+     "sections": [
+      {
+       "id": "数式・理論",
+       "title": "数式・理論",
+       "content_type": "summary",
+       "target_length_ratio": 15,
+       "includes": [
+        "background",
+        "objectives"
+       ],
+       "tone": "professional_concise",
+       "data_focus": "problem_definition"
+      },
+      {
+       "id": "完全コード",
+       "title": "完全コード",
+       "content_type": "conclusion",
+       "target_length_ratio": 85,
+       "includes": [
+        "summary",
+        "recommendations"
+       ],
+       "tone": "professional_conclusive",
+       "data_focus": "actionable_results"
+      }
+     ],
+     "formatting_rules": {
+      "use_code_blocks": true,
+      "include_citations": true,
+      "structure_with_headers": true,
+      "expert_attribution": true,
+      "technical_terminology": "preserve"
+     }
+    }
+   },
+   "llm_prompts": {
+    "value": {
+     "generation_instruction": "以下の構成で{min_answer_length}文字以上{max_answer_length}文字以下の包括的な技術文書を生成してください。Modelicaライブラリ専門家と熱流体専門家の両方の分析結果を統合し、ASTデータとPDF文献の両方を活用した高品質な実装ガイドを提供してください。",
+     "section_instruction": "各セクションは指定された比率と内容focusに従って構成してください。専門家の具体的な分析内容（facts, insights, recommendations）を活用し、引用情報を適切に含めてください。",
+     "output_format": "指定されたセクション構成に従い、技術的正確性を最優先として実装者が即座に活用できる詳細で構造化された説明を提供してください。",
+     "integration_focus": "2つの専門分野の知見を効果的に統合し、Routerによる品質管理の結果を適切に表現してください。",
+     "code_generation_focus": "コードの生成に重点を置き、retrieved_documentsの内容を必ずコードに含めてください。よくわからない内容がある場合はコードを生成せず、わからないと回答してください。"
+    }
+   }
+  },
+  "8": {
+   "max_iterations": {
+    "value": 1
+   },
+   "routing_rules": {
+    "value": {
+     "conditions": {
+      "condition_1": {
+       "checks": [
+        {
+         "field": "validation_confidence_6",
+         "operator": "lt",
+         "threshold": "0.6"
+        },
+        {
+         "field": "confidence_2",
+         "operator": "lt",
+         "threshold": "0.6"
+        },
+        {
+         "field": "confidence_2",
+         "operator": "lt",
+         "threshold": "0.6"
+        }
+       ],
+       "target": "node_1",
+       "description": "条件1",
+       "custom_expression": "[1] or [2] or [3]"
+      }
+     },
+     "default": {
+      "target": "node_7",
+      "decision": "proceed_to_target",
+      "description": "Default route to: node_7"
+     },
+     "max_iterations_exceeded": {
+      "target": "node_7",
+      "decision": "max_iterations_exceeded",
+      "description": "Max iterations exceeded route to: node_7"
+     }
+    }
+   }
+  }
+ },
+ "logging": {
+  "default_level": "VERBOSE",
+  "node_specific_levels": {
+   "1": "VERBOSE",
+   "2": "VERBOSE",
+   "3": "VERBOSE",
+   "4": "VERBOSE",
+   "5": "VERBOSE",
+   "6": "VERBOSE",
+   "7": "VERBOSE",
+   "8": "VERBOSE"
+  }
+ }
+}

@@ -1,0 +1,19 @@
+# PDF Converter App - 依存パッケージ
+
+# GUI Framework
+PySide6>=6.5.0
+
+# PDF Processing
+pymupdf4llm>=0.0.15
+
+# Standard libraries (通常はPythonに含まれる)
+# - json
+# - pathlib
+# - hashlib
+# - typing
+# - dataclasses
+# - datetime
+# - uuid
+# - re
+# - threading
+# - traceback

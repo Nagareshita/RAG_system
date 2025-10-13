@@ -1,0 +1,15 @@
+#  Visual Studio Build Tools インストール（C++コンパイラが必要）
+# https://aka.ms/vs/17/release/vs_buildtools.exe
+# 「C++ build tools」をチェックしてインストール
+
+# 依存関係インストール
+pip install tree-sitter==0.20.4
+
+# OpenModelica公式版をクローン
+git clone https://github.com/OpenModelica/tree-sitter-modelica.git
+※build_modelica_parser.pyと同一階層にtree-sitter-modelicaフォルダを置くこと
+
+#build_modelica_parser.py実行
+python build_modelica_parser.py
+
+#buildにmodelica.dllが生成されるので、\tabs\modelica_modules\buildに置く

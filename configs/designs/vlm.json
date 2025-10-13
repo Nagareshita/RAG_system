@@ -1,0 +1,43 @@
+{
+ "system_specification": {
+  "name": "Multi-Agent RAG System",
+  "version": "2.0",
+  "architecture": ""
+ },
+ "nodes": [
+  {
+   "id": 1,
+   "type": "vlm",
+   "pos": [
+    100,
+    100
+   ]
+  }
+ ],
+ "connections": [],
+ "node_thresholds": {
+  "1": {
+   "temperature": {
+    "value": 0.699999988079071
+   },
+   "top_p": {
+    "value": 0.800000011920929
+   },
+   "top_k": {
+    "value": 20
+   },
+   "max_new_tokens": {
+    "value": 512
+   },
+   "model_path": {
+    "value": "./vlm/SAIL-VL2-2B"
+   }
+  }
+ },
+ "logging": {
+  "default_level": "VERBOSE",
+  "node_specific_levels": {
+   "1": "VERBOSE"
+  }
+ }
+}

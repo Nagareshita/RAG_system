@@ -1,0 +1,197 @@
+{
+  "system_specification": {
+    "name": "Multi-Agent Connection Rules",
+    "version": "2.5.0",
+    "architecture": "LangGraph + 段階間連携信頼度システム + 並列合流対応",
+    "design_philosophy": "エッジタイプ完全制御、並列処理安全、Router条件分岐対応"
+  },
+
+  "edge_types": {
+    "data_flow": {
+      "description": "通常のデータ受け渡し",
+      "color": [70, 150, 220],
+      "thickness": 3,
+      "style": "solid",
+      "merge_required": false,
+      "supports_parallel": true
+    },
+    "merge_flow": {
+      "description": "並列合流データ統合",
+      "color": [230, 120, 80],
+      "thickness": 4,
+      "style": "solid",
+      "merge_required": true,
+      "supports_parallel": true,
+      "strategies": ["accumulate", "union", "prioritize", "weighted_average"]
+    },
+    "conditional_flow": {
+      "description": "Router条件分岐",
+      "color": [80, 200, 120],
+      "thickness": 3,
+      "style": "dashed",
+      "merge_required": false,
+      "requires_router": true,
+      "supports_parallel": false
+    },
+    "feedback_flow": {
+      "description": "品質改善のための差し戻し",
+      "color": [220, 80, 100],
+      "thickness": 4,
+      "style": "dotted",
+      "merge_required": false,
+      "supports_parallel": true,
+      "max_loops": 3
+    }
+  },
+
+  "agents": {
+    "analyzer": {
+      "allowed_outputs": {
+        "retriever": ["data_flow"],
+        "router": ["data_flow"]
+      },
+      "allowed_inputs": {
+        "validator": ["feedback_flow"],
+        "router": ["conditional_flow"]
+      },
+      "description": "ユーザー入力の分析・最適化（累積情報活用）",
+      "constraints": {
+        "max_outputs": 5,
+        "requires_user_input": true,
+        "supports_multiple_instances": true
+      },
+      "confidence_system": "固定値ベース"
+    },
+    
+    "retriever": {
+      "allowed_outputs": {
+        "domain_expert": ["data_flow"],
+        "validator": ["data_flow"],
+        "router": ["data_flow"]
+      },
+      "allowed_inputs": {
+        "analyzer": ["data_flow"],
+        "validator": ["feedback_flow"],
+        "router": ["conditional_flow"]
+      },
+      "description": "BGE-M3 + クロスエンコーダ2段階検索実行",
+      "constraints": {
+        "supports_multiple_instances": true,
+        "max_feedback_loops": 3,
+        "requires_vector_manager": true
+      },
+      "confidence_system": "検索品質正規化（段階制約基準値生成）"
+    },
+
+    "domain_expert": {
+      "allowed_outputs": {
+        "validator": ["merge_flow"],
+        "refiner": ["data_flow"],
+        "router": ["data_flow"]
+      },
+      "allowed_inputs": {
+        "retriever": ["data_flow"],
+        "validator": ["feedback_flow"],
+        "router": ["conditional_flow"]
+      },
+      "description": "前段階制約型専門分析（専門分野指定可能）",
+      "constraints": {
+        "requires_search_results": true,
+        "supports_multiple_instances": true,
+        "max_parallel_instances": 10
+      },
+      "confidence_system": "段階間連携制約（Retriever品質+上乗せ制限）"
+    },
+
+    "validator": {
+      "allowed_outputs": {
+        "analyzer": ["feedback_flow"],
+        "retriever": ["feedback_flow"],
+        "domain_expert": ["feedback_flow"],
+        "refiner": ["data_flow"],
+        "router": ["data_flow"]
+      },
+      "allowed_inputs": {
+        "domain_expert": ["merge_flow"],
+        "refiner": ["feedback_flow"],
+        "router": ["conditional_flow"]
+      },
+      "description": "段階間統合品質検証（LLM+ルール複合）",
+      "constraints": {
+        "supports_multiple_instances": true,
+        "max_feedback_loops": 3,
+        "max_refiner_loops": 2,
+        "requires_merge_capability": true
+      },
+      "confidence_system": "多段階重み付き統合（前段階依存+LLM検証+ルールメトリクス）"
+    },
+
+    "refiner": {
+      "allowed_outputs": {
+        "validator": ["feedback_flow"]
+      },
+      "allowed_inputs": {
+        "domain_expert": ["data_flow"],
+        "validator": ["data_flow"],
+        "router": ["conditional_flow"]
+      },
+      "description": "最終回答生成・調整（詳細出力）",
+      "constraints": {
+        "supports_multiple_instances": true,
+        "max_validation_loops": 2
+      },
+      "confidence_system": "設計予定"
+    },
+
+    "router": {
+      "allowed_outputs": {
+        "analyzer": ["conditional_flow"],
+        "retriever": ["conditional_flow"],
+        "domain_expert": ["conditional_flow"],
+        "validator": ["conditional_flow"],
+        "refiner": ["conditional_flow"],
+        "vlm": ["conditional_flow"]
+      },
+      "allowed_inputs": {
+        "analyzer": ["data_flow"],
+        "retriever": ["data_flow"],
+        "domain_expert": ["data_flow"],
+        "validator": ["data_flow"],
+        "refiner": ["data_flow"],
+        "vlm": ["data_flow"]
+      },
+      "description": "ユーザー定義条件分岐・経路選択",
+      "constraints": {
+        "requires_condition": true,
+        "max_routing_depth": 10,
+        "supports_priority_evaluation": true,
+        "supports_multiple_conditions": true
+      },
+      "confidence_system": "条件分岐ロジック"
+    },
+
+    "vlm": {
+      "allowed_outputs": {
+        "refiner": ["data_flow"],
+        "validator": ["data_flow"],
+        "router": ["data_flow"]
+      },
+      "allowed_inputs": {
+        "router": ["conditional_flow"]
+      },
+      "description": "Vision Language Model - 画像認識・質問応答",
+      "constraints": {
+        "supports_multiple_instances": false,
+        "requires_user_input": true,
+        "optional_image_input": true
+      },
+      "confidence_system": "固定値ベース"
+    }
+  },
+
+  "global_constraints": {
+    "max_total_loops": 15,
+    "required_start_agents": ["analyzer", "vlm"],
+    "optional_end_agents": ["refiner", "validator", "vlm"]
+  }
+}

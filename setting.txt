@@ -1,0 +1,12 @@
+# 1) ŠÂ‹«ì¬i3.10‚É“ˆêj
+mamba create -n rag python=3.10 -y
+conda activate rag
+
+# 2) PyTorch/cu121 ‚ğŒÅ’è
+mamba install pytorch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 pytorch-cuda=12.1 -c pytorch -c nvidia -y
+
+# 3) pipŒn
+python -m pip install --upgrade pip
+
+# 4) requirements ‚ğ“ü‚ê‚é
+pip install -r requirements.txt

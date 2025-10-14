@@ -1,0 +1,93 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+    --fg: #111;
+    --muted: #666;
+    --bg-code: #f6f8fa;
+    --border: #e5e7eb;
+    --maxw: 980px;
+}
+html, body { height: 100%; }
+body {
+    font-family: -apple-system, Segoe UI, Roboto, 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif;
+    line-height: 1.7; color: var(--fg);
+    margin: 0; padding: 16px 12px; background: #fff;
+}
+.container { margin: 0 auto; max-width: var(--maxw); }
+h1,h2,h3 { margin: 1.1em 0 .6em; }
+h2 { font-size: 1.3rem; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+p { margin: .6em 0; }
+ul,ol { padding-left: 1.4em; }
+pre, code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+    font-size: .95em;
+}
+pre {
+    background: var(--bg-code); padding: 12px; border-radius: 8px;
+    overflow: auto; border: 1px solid var(--border);
+}
+table {
+    border-collapse: collapse;
+    margin: 1em 0;
+    width: 100%;
+    table-layout: auto;
+}
+th, td {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+thead th {
+    background: #fafafa;
+    font-weight: bold;
+}
+tr:nth-child(even) td {
+    background: #fcfcfc;
+}
+hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
+</style>
+<!-- MathJax 設定 -->
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['\\(', '\\)'], ['$', '$']],
+    displayMath: [['\\[', '\\]'], ['$$', '$$']],
+    processEscapes: true,
+    processEnvironments: true
+  },
+  svg: {
+    fontCache: 'global'
+  },
+  startup: {
+    ready: () => {
+      console.log('MathJax is loaded and ready');
+      console.log('MathJax config:', window.MathJax);
+      MathJax.startup.defaultReady();
+      MathJax.startup.promise.then(() => {
+        console.log('MathJax typesetting complete');
+      });
+    }
+  }
+};
+</script>
+<script id="MathJax-script" async src="assets/mathjax/MathJax-3.2.2/es5/tex-svg.js"></script>
+</head>
+<body>
+<div class="container">
+<h2>VLM回答（Vision Language Model）</h2>
+<p>{<br />
+    "解析の種類": "流体力学解析（CFD解析）",<br />
+    "解析している製品": "円筒状物体と立方体状物体の相互作用を解析する製品（例：空気動学試験用の試験台や流体力学シミュレーション用の製品）。",<br />
+    "解析結果からわかること": "物体の表面周辺で流体の速度が急激に増加し、流体の乱流が発生している。",<br />
+    "改善ポイント": "流体の流れを安定させるために、物体の配置や形状を調整する必要がある。また、速度分布を均一化するための流体の減速装置を追加することも考えられる。", <br />
+    "解析設定の推奨": "解析時間と時間間隔を調整し、速度分布の精度を高める。流体の粘性係数を適切に設定し、乱流の影響を最小限に抑える。"<br />
+}</p>
+</div>
+</body>
+</html>

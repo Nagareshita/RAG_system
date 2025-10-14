@@ -56,7 +56,10 @@ class VLMExecutor(BaseAgentExecutor):
                 if not image_path_obj.exists():
                     self._log(LogLevel.MINIMAL, f"警告: 画像ファイルが見つかりません: {image_path}", node_id)
                 else:
+                    # 🔥 メモリ最適化: load()で即座にピクセルデータを読み込み
                     image = Image.open(image_path_obj)
+                    image.load()  # ファイルハンドルをすぐに閉じる
+                    
                     if image.mode != 'RGB':
                         image = image.convert('RGB')
                     
@@ -83,13 +86,31 @@ class VLMExecutor(BaseAgentExecutor):
         top_p = self._get_threshold("top_p")
         top_k = self._get_threshold("top_k")
         max_new_tokens = self._get_threshold("max_new_tokens")
+        min_new_tokens = self._get_threshold("min_new_tokens")
+        repetition_penalty = self._get_threshold("repetition_penalty")
+        no_repeat_ngram_size = self._get_threshold("no_repeat_ngram_size")
+        num_beams = self._get_threshold("num_beams")
+        length_penalty = self._get_threshold("length_penalty")
+        diversity_penalty = self._get_threshold("diversity_penalty")
+        early_stopping = self._get_threshold("early_stopping")
+        do_sample = self._get_threshold("do_sample")
+        preset = self._get_threshold("preset")
         
         if is_verbose:
             self._log(LogLevel.VERBOSE, "=== 生成パラメータ ===", node_id)
+            self._log(LogLevel.VERBOSE, f"preset: {preset}", node_id)
             self._log(LogLevel.VERBOSE, f"temperature: {temperature}", node_id)
             self._log(LogLevel.VERBOSE, f"top_p: {top_p}", node_id)
             self._log(LogLevel.VERBOSE, f"top_k: {top_k}", node_id)
             self._log(LogLevel.VERBOSE, f"max_new_tokens: {max_new_tokens}", node_id)
+            self._log(LogLevel.VERBOSE, f"min_new_tokens: {min_new_tokens}", node_id)
+            self._log(LogLevel.VERBOSE, f"repetition_penalty: {repetition_penalty}", node_id)
+            self._log(LogLevel.VERBOSE, f"no_repeat_ngram_size: {no_repeat_ngram_size}", node_id)
+            self._log(LogLevel.VERBOSE, f"num_beams: {num_beams}", node_id)
+            self._log(LogLevel.VERBOSE, f"length_penalty: {length_penalty}", node_id)
+            self._log(LogLevel.VERBOSE, f"diversity_penalty: {diversity_penalty}", node_id)
+            self._log(LogLevel.VERBOSE, f"early_stopping: {early_stopping}", node_id)
+            self._log(LogLevel.VERBOSE, f"do_sample: {do_sample}", node_id)
         
         # VLM応答生成
         try:
@@ -99,7 +120,16 @@ class VLMExecutor(BaseAgentExecutor):
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
-                max_new_tokens=max_new_tokens
+                max_new_tokens=max_new_tokens,
+                min_new_tokens=min_new_tokens,
+                repetition_penalty=repetition_penalty,
+                no_repeat_ngram_size=no_repeat_ngram_size,
+                num_beams=num_beams,
+                length_penalty=length_penalty,
+                diversity_penalty=diversity_penalty,
+                early_stopping=early_stopping,
+                do_sample=do_sample,
+                preset=preset
             )
             
             if is_verbose:
@@ -128,3 +158,12 @@ class VLMExecutor(BaseAgentExecutor):
                 self._log(LogLevel.VERBOSE, traceback.format_exc(), node_id)
             
             return self._create_error_result(error_msg, node_id)
+        
+        finally:
+            # 🔥 重要: 画像オブジェクトを確実に解放（メモリリーク防止）
+            if image is not None:
+                try:
+                    image.close()
+                    del image
+                except:
+                    pass

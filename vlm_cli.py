@@ -261,6 +261,19 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    
+    finally:
+        # 🔥 画像オブジェクトのクリーンアップ
+        if image is not None:
+            try:
+                image.close()
+            except:
+                pass
+        
+        # 🔥 CLI終了時はモデルも完全クリーンアップ（メモリ解放）
+        print("\nメモリクリーンアップ中...")
+        model_manager.cleanup_model()
+        print("✓ クリーンアップ完了")
 
 
 if __name__ == "__main__":

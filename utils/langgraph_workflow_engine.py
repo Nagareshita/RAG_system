@@ -243,8 +243,13 @@ class LangGraphWorkflowEngine:
             f"初期状態設定完了 - current_data: {state['current_data']}"
         )
         
-        final_state = self.workflow.invoke(state)
-        return self._format_result(final_state)
+        try:
+            final_state = self.workflow.invoke(state)
+            return self._format_result(final_state)
+        
+        finally:
+            # 🔥 重要: ワークフロー終了後、VLMモデルのメモリを軽量化
+            self._cleanup_after_execution()
     
     def _format_result(self, final_state: WorkflowState) -> Dict[str, Any]:
         """結果フォーマット（DomainExpert最終回答対応版）"""
@@ -576,3 +581,45 @@ class LangGraphWorkflowEngine:
             self.vlm_model_manager = None
             import traceback
             self.log_manager.log("vlm", LogLevel.VERBOSE, traceback.format_exc())
+    
+    def _cleanup_after_execution(self):
+        """
+        ワークフロー実行後のメモリクリーンアップ
+        VLMモデルの軽量クリーンアップ（次回実行に備えてモデルは保持）
+        """
+        import gc
+        import torch
+        
+        # VLMモデルが存在する場合のみクリーンアップ
+        if self.vlm_model_manager is not None:
+            try:
+                # モデルのキャッシュクリア
+                if hasattr(self.vlm_model_manager.model, 'past_key_values'):
+                    self.vlm_model_manager.model.past_key_values = None
+                
+                # Python GC実行
+                gc.collect()
+                
+                # CUDA キャッシュクリア
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                
+                self.log_manager.log("vlm", LogLevel.VERBOSE, "VLMメモリクリーンアップ完了")
+            
+            except Exception as e:
+                self.log_manager.log("vlm", LogLevel.VERBOSE, f"VLMクリーンアップ警告: {e}")
+    
+    def cleanup(self):
+        """
+        エンジン終了時の完全クリーンアップ
+        VLMモデルをメモリから完全に削除（アプリケーション終了時用）
+        """
+        if self.vlm_model_manager is not None:
+            self.log_manager.log("vlm", LogLevel.MINIMAL, "VLMモデルの完全クリーンアップを実行します")
+            try:
+                self.vlm_model_manager.cleanup_model()
+                self.vlm_model_manager = None
+                self.log_manager.log("vlm", LogLevel.MINIMAL, "VLMモデルの完全クリーンアップ完了")
+            except Exception as e:
+                self.log_manager.log("vlm", LogLevel.MINIMAL, f"VLM完全クリーンアップエラー: {e}")

@@ -18,34 +18,79 @@ class ModelManager:
     
     # デフォルトパラメータ（Qwen3-1.7B推奨値に準拠）
     DEFAULT_GENERATION_CONFIG = {
-        "max_new_tokens": 512,
+        # Sampling / search
+        "do_sample": True,
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
-        "do_sample": True,
+        "num_beams": 1,
+        "length_penalty": 1.0,
+        "no_repeat_ngram_size": 0,
         "repetition_penalty": 1.0,
+        "diversity_penalty": 0.0,
+        "early_stopping": False,
+
+        # Length control
+        "min_new_tokens": 1,
+        "max_new_tokens": 512,
     }
     
     # タスク別プリセット
     TASK_PRESETS = {
-        "accurate": {  # 正確性重視/OCR
+        # 既存互換（シンプル）
+        "accurate": {  # 正確性重視/OCR寄り
+            "do_sample": False,
+            "num_beams": 4,
+            "length_penalty": 1.05,
+            "min_new_tokens": 64,
+            "max_new_tokens": 1024,
+            "no_repeat_ngram_size": 3,
+            "repetition_penalty": 1.08,
             "temperature": 0.1,
             "top_p": 0.5,
             "top_k": 10,
-            "repetition_penalty": 1.1,
         },
         "balanced": {  # 画像説明・バランス型
+            "do_sample": True,
             "temperature": 0.7,
             "top_p": 0.8,
             "top_k": 20,
+            "min_new_tokens": 32,
+            "max_new_tokens": 512,
             "repetition_penalty": 1.0,
         },
-        "creative": {  # 創造的タスク
-            "temperature": 0.9,
-            "top_p": 0.95,
-            "top_k": 50,
-            "repetition_penalty": 1.2,
-        }
+
+        # 提案プリセット（リクエスト準拠）
+        "ocr": {
+            "do_sample": False, "num_beams": 5, "length_penalty": 1.1,
+            "min_new_tokens": 120, "max_new_tokens": 2048,
+            "no_repeat_ngram_size": 4, "repetition_penalty": 1.05
+        },
+        "qa": {
+            "do_sample": False, "num_beams": 4,
+            "min_new_tokens": 64, "max_new_tokens": 1024,
+            "no_repeat_ngram_size": 4, "repetition_penalty": 1.05
+        },
+        "code": {
+            "do_sample": False, "num_beams": 4,
+            "length_penalty": 0.98, "min_new_tokens": 128, "max_new_tokens": 2048,
+            "no_repeat_ngram_size": 6, "repetition_penalty": 1.08
+        },
+        "creative": {
+            "do_sample": True, "temperature": 0.9, "top_p": 0.92,
+            "min_new_tokens": 80, "max_new_tokens": 1024,
+            "repetition_penalty": 1.02
+        },
+        "summary": {
+            "do_sample": False, "num_beams": 3,
+            "length_penalty": 0.95, "min_new_tokens": 80, "max_new_tokens": 800,
+            "no_repeat_ngram_size": 4
+        },
+        "json": {
+            "do_sample": False, "num_beams": 6,
+            "min_new_tokens": 80, "max_new_tokens": 1600,
+            "no_repeat_ngram_size": 4, "repetition_penalty": 1.05
+        },
     }
     
     def __init__(self, model_path: str = "./SAIL-VL2-2B"):
@@ -227,10 +272,16 @@ class ModelManager:
         text: str,
         image: Optional[Image.Image] = None,
         max_new_tokens: Optional[int] = None,
+        min_new_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
         do_sample: Optional[bool] = None,
+        num_beams: Optional[int] = None,
+        length_penalty: Optional[float] = None,
+        no_repeat_ngram_size: Optional[int] = None,
+        diversity_penalty: Optional[float] = None,
+        early_stopping: Optional[bool] = None,
         repetition_penalty: Optional[float] = None,
         preset: Optional[str] = None,
     ) -> str:
@@ -241,10 +292,16 @@ class ModelManager:
             text: 入力テキスト
             image: 入力画像（オプション）
             max_new_tokens: 生成する最大トークン数
+            min_new_tokens: 生成する最小トークン数
             temperature: サンプリング温度（0.0-1.0）
             top_p: 核サンプリング確率
             top_k: 上位K個のトークンを考慮
             do_sample: サンプリングの有効/無効
+            num_beams: ビーム探索のビーム数
+            length_penalty: シーケンス長ペナルティ
+            no_repeat_ngram_size: n-gramの繰り返し抑制サイズ
+            diversity_penalty: 多様性ペナルティ（ビーム分岐向け）
+            early_stopping: 早期停止フラグ
             repetition_penalty: 繰り返しペナルティ
             preset: タスク別プリセット ("accurate", "balanced", "creative")
         
@@ -264,6 +321,8 @@ class ModelManager:
         # 個別指定パラメータで上書き
         if max_new_tokens is not None:
             gen_config["max_new_tokens"] = max_new_tokens
+        if min_new_tokens is not None:
+            gen_config["min_new_tokens"] = min_new_tokens
         if temperature is not None:
             gen_config["temperature"] = temperature
         if top_p is not None:
@@ -272,6 +331,16 @@ class ModelManager:
             gen_config["top_k"] = top_k
         if do_sample is not None:
             gen_config["do_sample"] = do_sample
+        if num_beams is not None:
+            gen_config["num_beams"] = num_beams
+        if length_penalty is not None:
+            gen_config["length_penalty"] = length_penalty
+        if no_repeat_ngram_size is not None:
+            gen_config["no_repeat_ngram_size"] = no_repeat_ngram_size
+        if diversity_penalty is not None:
+            gen_config["diversity_penalty"] = diversity_penalty
+        if early_stopping is not None:
+            gen_config["early_stopping"] = early_stopping
         if repetition_penalty is not None:
             gen_config["repetition_penalty"] = repetition_penalty
         

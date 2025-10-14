@@ -81,6 +81,12 @@ def main():
         default=None,
         help="最大トークン数 (50-2048, デフォルト: 512)"
     )
+    parser.add_argument(
+        "--min-tokens", "--min_tokens",
+        type=int,
+        default=None,
+        help="最小トークン数 (デフォルト: 1)"
+    )
     
     parser.add_argument(
         "--rep-penalty", "--repetition_penalty",
@@ -88,13 +94,59 @@ def main():
         default=None,
         help="Repetition Penalty (1.0-2.0, デフォルト: 1.0)"
     )
+    parser.add_argument(
+        "--no-repeat-ngram-size", "--no_repeat_ngram_size",
+        type=int,
+        default=None,
+        help="No-Repeat N-gram Size (繰り返し抑制)"
+    )
+    parser.add_argument(
+        "--num-beams", "--num_beams",
+        type=int,
+        default=None,
+        help="ビーム探索の数 (num_beams)"
+    )
+    parser.add_argument(
+        "--length-penalty", "--length_penalty",
+        type=float,
+        default=None,
+        help="長さペナルティ (length_penalty)"
+    )
+    parser.add_argument(
+        "--diversity-penalty", "--diversity_penalty",
+        type=float,
+        default=None,
+        help="多様性ペナルティ (diversity_penalty)"
+    )
+    parser.add_argument(
+        "--early-stopping", "--early_stopping",
+        action="store_true",
+        help="早期停止を有効化"
+    )
+    parser.add_argument(
+        "--do-sample", "--do_sample",
+        action="store_true",
+        help="サンプリングを有効化 (do_sample=True)"
+    )
+    parser.add_argument(
+        "--no-sample",
+        action="store_true",
+        help="サンプリングを無効化 (do_sample=False)"
+    )
     
     parser.add_argument(
         "--preset",
         type=str,
-        choices=["accurate", "balanced", "creative"],
+        choices=[
+            "accurate", "balanced",
+            "ocr", "qa", "code", "creative", "summary", "json"
+        ],
         default=None,
-        help="プリセット設定 (accurate: OCR/正確性重視, balanced: バランス型, creative: 創造的)"
+        help=(
+            "プリセット設定: "
+            "accurate(正確性/OCR寄り), balanced(バランス), "
+            "ocr, qa, code, creative, summary, json"
+        )
     )
     
     args = parser.parse_args()
@@ -149,8 +201,24 @@ def main():
         gen_params["top_k"] = args.top_k
     if args.max_tokens is not None:
         gen_params["max_new_tokens"] = args.max_tokens
+    if args.min_tokens is not None:
+        gen_params["min_new_tokens"] = args.min_tokens
     if args.rep_penalty is not None:
         gen_params["repetition_penalty"] = args.rep_penalty
+    if args.no_repeat_ngram_size is not None:
+        gen_params["no_repeat_ngram_size"] = args.no_repeat_ngram_size
+    if args.num_beams is not None:
+        gen_params["num_beams"] = args.num_beams
+    if args.length_penalty is not None:
+        gen_params["length_penalty"] = args.length_penalty
+    if args.diversity_penalty is not None:
+        gen_params["diversity_penalty"] = args.diversity_penalty
+    if args.early_stopping:
+        gen_params["early_stopping"] = True
+    if args.do_sample:
+        gen_params["do_sample"] = True
+    elif args.no_sample:
+        gen_params["do_sample"] = False
     if args.preset is not None:
         gen_params["preset"] = args.preset
     

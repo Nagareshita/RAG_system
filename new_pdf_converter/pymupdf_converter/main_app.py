@@ -1,31 +1,24 @@
-# tabs/pdf_parser_tab.py
-"""
-PDF解析タブ
-pdf_converterフォルダのロジックを移植
-"""
-
+# src/apps/pymupdf_converter/main_app.py (修正版)
 import sys
+import json
 from pathlib import Path
 
-# new_pdf_converter の依存関係をパスに追加
-project_root = Path(__file__).resolve().parent.parent
-new_pdf_converter_path = project_root / "new_pdf_converter"
-sys.path.insert(0, str(new_pdf_converter_path))
-
-import json
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QMessageBox, QSplitter
+from PySide6.QtWidgets import QApplication, QMainWindow, QHBoxLayout, QWidget, QMessageBox, QSplitter
 from PySide6.QtCore import QThread, Signal, Qt
 
-from pymupdf_converter.llm_models import ProcessedDocument
-from pymupdf_converter.control_panel import ControlPanel
-from pymupdf_converter.result_viewer import ResultViewer
-from pymupdf_converter.pdf_processor import PDFProcessorWorker
+from .llm_models import ProcessedDocument
+from .control_panel import ControlPanel
+from .result_viewer import ResultViewer
+from .pdf_processor import PDFProcessorWorker
 
-class PDFParserTab(QWidget):
-    """PDF解析タブ"""
+class PyMuPDFConverterApp(QMainWindow):
+    """メインアプリケーション"""
     
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("📄 PDF to JSON Converter (PyMuPDF4LLM)")
+        self.setMinimumSize(1400, 900)
+        
         self.current_result = None
         self.worker = None
         self._setup_ui()
@@ -33,12 +26,17 @@ class PDFParserTab(QWidget):
     
     def _setup_ui(self):
         """UI構築"""
-        layout = QHBoxLayout(self)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
 
+        layout = QHBoxLayout(central_widget)
+
+        # スプリッター（左: 設定 / 右: 結果）
         splitter = QSplitter(Qt.Horizontal)
 
         # コントロールパネル
         self.control_panel = ControlPanel()
+        self.control_panel.setMinimumWidth(480)
         splitter.addWidget(self.control_panel)
 
         # 結果ビューアー
@@ -47,6 +45,8 @@ class PDFParserTab(QWidget):
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
+        splitter.setHandleWidth(8)
+        splitter.setSizes([600, 900])
 
         layout.addWidget(splitter)
     
@@ -123,8 +123,30 @@ class PDFParserTab(QWidget):
             QMessageBox.critical(self, "保存エラー", f"保存に失敗しました:\n{e}")
     
     def closeEvent(self, event):
-        """タブ終了時のクリーンアップ"""
+        """アプリ終了時のクリーンアップ"""
         if self.worker and self.worker.isRunning():
             self.worker.terminate()
             self.worker.wait(3000)
         event.accept()
+
+def main():
+    """メイン関数"""
+    app = QApplication(sys.argv)
+    
+    app.setApplicationName("PDF to JSON Converter")
+    app.setApplicationVersion("1.0")
+    
+    window = PyMuPDFConverterApp()
+    window.show()
+    
+    print("🚀 PDF to JSON Converter 起動")
+    print("=" * 50)
+    print("📄 PyMuPDF4LLM → 構造化JSON変換")
+    print("🎯 ベクトル化に最適化されたチャンク分割")
+    print("💡 Modelica文書対応")
+    print("=" * 50)
+    
+    return app.exec()
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -53,9 +53,9 @@ class ControlPanel(QGroupBox):
         pymupdf_group = self._create_pymupdf_group()
         config_layout.addWidget(pymupdf_group)
 
-        # RAG メタデータ設定
-        rag_group = self._create_rag_group()
-        config_layout.addWidget(rag_group)
+        # 画像キャプション生成設定
+        caption_group = self._create_caption_group()
+        config_layout.addWidget(caption_group)
 
         config_layout.addStretch(1)
         scroll.setWidget(config_widget)
@@ -307,7 +307,8 @@ class ControlPanel(QGroupBox):
             'chunk_size': self.chunk_size_spin.value(),
             'overlap_size': self.overlap_size_spin.value(),
             'pymupdf_kwargs': self._collect_pymupdf_kwargs(),
-            'rag_settings': self._collect_rag_settings(),
+            # 'rag_settings': self._collect_rag_settings(),  # 非表示/非使用
+            'generate_captions': self.caption_checkbox.isChecked(),
         }
         self.processing_requested.emit(settings)
 
@@ -348,6 +349,23 @@ class ControlPanel(QGroupBox):
         if kwargs.get("extract_words"):
             kwargs["page_chunks"] = True
         return kwargs
+
+    def _create_caption_group(self):
+        group = QGroupBox("画像キャプション")
+        form = QFormLayout(group)
+        self.caption_checkbox = QCheckBox("画像キャプションを生成する")
+        self.caption_checkbox.setChecked(False)
+        # write_images と連動して有効化/無効化
+        wi = self.pymupdf_controls.get("write_images")
+        if isinstance(wi, QCheckBox):
+            self.caption_checkbox.setEnabled(wi.isChecked())
+            def _sync_caption_enabled(state):
+                self.caption_checkbox.setChecked(False) if not state else None
+                self.caption_checkbox.setEnabled(state)
+            wi.toggled.connect(_sync_caption_enabled)
+        form.addRow(self.caption_checkbox)
+
+        return group
 
     def _collect_rag_settings(self) -> dict:
         out = {}

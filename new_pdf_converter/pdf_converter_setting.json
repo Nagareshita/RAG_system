@@ -54,7 +54,7 @@
       "label": "画像を書き出す（write_images）",
       "type": "boolean",
       "ui": "checkbox",
-      "default": false,
+      "default": true,
       "help": "画像をファイルとして保存し、Markdown内に ![](path) を差し込みます（embed_imagesと排他）。"
     },
     {
@@ -64,15 +64,6 @@
       "ui": "checkbox",
       "default": false,
       "help": "MarkdownへBase64で直埋め。ファイルが散らからない代わりにサイズ増大。（write_imagesと排他）"
-    },
-    {
-      "key": "image_path",
-      "label": "画像保存フォルダ（image_path）",
-      "type": "string",
-      "ui": "folder",
-      "default": "images",
-      "enable_if": {"write_images": true},
-      "help": "write_images=true時の保存先。"
     },
     {
       "key": "dpi",
@@ -129,7 +120,7 @@
       "label": "グリフ番号で抽出（use_glyphs）",
       "type": "boolean",
       "ui": "checkbox",
-      "default": false,
+      "default": true,
       "help": "Unicodeが欠落したフォント対策。"
     }
   ],

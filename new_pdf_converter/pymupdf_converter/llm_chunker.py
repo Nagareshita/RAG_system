@@ -85,25 +85,37 @@ class MarkdownChunker:
             for line_num, line in enumerate(lines):
                 try:
                     if line.startswith('#'):
-                        # 直前のセクションを本文有無に関わらず確定（タイトルがあれば見出しのみでも保持）
-                        if current_section.get("title") or current_section["content"].strip():
-                            sections.append(current_section.copy())
-                        
+                        # 新しい見出し行を検出
                         level = len(line) - len(line.lstrip('#'))
                         title = line.lstrip('#').strip()
-                        # ページ見出しかを判定し、現在ページを更新
+
+                        # ページ見出しかを判定
                         m = re.match(r"^\s*page\s+(\d+)\b", title, flags=re.IGNORECASE)
                         if m:
+                            # 直前のセクションを確定（必要なら）
+                            if current_section.get("title") or current_section["content"].strip():
+                                sections.append(current_section.copy())
+
+                            # 現在ページを更新
                             try:
                                 current_page = int(m.group(1))
                             except Exception:
-                                current_page = current_page
-                        current_section = {
-                            "title": title,
-                            "content": "",
-                            "level": level,
-                            "page": current_page
-                        }
+                                pass
+
+                            # ページマーカーはチャンク化しない。以降の本文はページ番号のみ保持した無題セクションとして蓄積
+                            current_section = {"title": "", "content": "", "level": 0, "page": current_page}
+                        else:
+                            # 直前のセクションを本文有無に関わらず確定（タイトルがあれば見出しのみでも保持）
+                            if current_section.get("title") or current_section["content"].strip():
+                                sections.append(current_section.copy())
+
+                            # 通常の見出し開始
+                            current_section = {
+                                "title": title,
+                                "content": "",
+                                "level": level,
+                                "page": current_page
+                            }
                     else:
                         current_section["content"] += line + '\n'
                         
@@ -192,8 +204,8 @@ class MarkdownChunker:
             # チャンクタイプ判定
             chunk_type = self._determine_chunk_type(contains_code, contains_formulas, contains_tables)
             
-            # キーワード抽出
-            keywords = self._extract_keywords(content)
+            # キーワード抽出（無効化: RAGメタ付与を廃止）
+            keywords = []
             
             # トークンカウント（安全版）
             token_count = len(content.split()) if content else 0
@@ -203,6 +215,7 @@ class MarkdownChunker:
             metadata = ChunkMetadata(
                 section_title=section.get("title", ""),
                 section_level=section.get("level", 0),
+                page=section.get("page"),
                 chunk_index=chunk_index,
                 chunk_type=chunk_type,
                 token_count=token_count,
@@ -213,16 +226,7 @@ class MarkdownChunker:
                 keywords=keywords,
                 source_document=doc_metadata.filename
             )
-            # RAG: ページ番号キーワードの付与（設定で有効な場合）
-            try:
-                if self.rag_emit_page:
-                    pg = section.get("page")
-                    if isinstance(pg, int) and pg > 0:
-                        tag = f"page:{pg}"
-                        if tag not in metadata.keywords:
-                            metadata.keywords.append(tag)
-            except Exception:
-                pass
+            # RAGメタ付与（page/toc/sourceなど）は削除
             
             return DocumentChunk(content=content, chunk_metadata=metadata)
             
@@ -289,3 +293,5 @@ class MarkdownChunker:
             return list(set(found_keywords))
         except Exception:
             return []
+
+

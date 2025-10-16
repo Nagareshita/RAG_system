@@ -64,7 +64,26 @@ class PDFParserTab(QWidget):
         self.worker.progress_updated.connect(self.control_panel.update_status)
         self.worker.processing_completed.connect(self._on_processing_completed)
         self.worker.error_occurred.connect(self._on_error_occurred)
+        # VLM進捗を結果ビューへ反映
+        try:
+            self.worker.vlm_progress.connect(self._on_vlm_progress)
+        except Exception:
+            pass
         self.worker.start()
+
+    def _on_vlm_progress(self, ev: dict):
+        try:
+            # キャプション開始のタイミングで自動的にVLMプログレスタブへ切り替え
+            if ev.get('stage') == 'caption_start':
+                if hasattr(self.result_viewer, 'focus_vlm_tab'):
+                    self.result_viewer.focus_vlm_tab()
+        except Exception:
+            pass
+        # 逐次行追加
+        try:
+            self.result_viewer.append_vlm_event(ev)
+        except Exception:
+            pass
     
     def _on_processing_completed(self, result: ProcessedDocument):
         """処理完了"""

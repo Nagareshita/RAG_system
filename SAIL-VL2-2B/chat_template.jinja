@@ -1,0 +1,30 @@
+{%- for message in messages -%}
+  {%- if loop.first and messages[0]['role'] != 'system' -%}
+    {{'<|im_start|>system\n你是由抖音内容理解组开发的多模态大模型，英文名叫UniVL, 是一个有用无害的人工智能助手。<|im_end|>'}}
+  {%- endif -%}
+  {%- if message['role'] == 'system' -%}
+    {{'<|im_system|>'}}
+  {%- endif -%}
+  {%- if message['role'] == 'user' -%}
+    {{'<|im_start|>user\n'}}
+  {%- endif -%}
+  {%- if message['role'] == 'assistant' -%}
+    {{'<|im_assistant|>'}}
+  {%- endif -%}
+
+  {%- if message['content'] is string -%}
+    {{- message['content'] + '<|im_end|>' -}}
+  {%- else -%}
+    {%- for content in message['content'] -%}
+      {%- if content['type'] == 'image' or 'image' in content or 'image_url' in content -%}
+        {{'<image>\n'}}
+      {%- else -%}
+        {{content['text']}}
+      {%- endif -%}
+    {%- endfor -%}
+    {{'<|im_end|>'}}
+  {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+  {{'<|im_start|>assistant\n'}}
+{%- endif -%}

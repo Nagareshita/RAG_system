@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox, QListWidget, QListWidgetItem, QSplitter
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPixmap, QImage
 
 from .llm_models import ProcessedDocument, DocumentChunk
 
@@ -206,6 +206,20 @@ class ResultViewer(QTabWidget):
         # 保存タブ
         save_tab = self._create_save_tab()
         self.addTab(save_tab, "保存")
+
+        # VLM進捗タブ
+        self.vlm_tab = QWidget()
+        vlm_layout = QVBoxLayout(self.vlm_tab)
+        self.vlm_table = QTableWidget(0, 6, self.vlm_tab)
+        self.vlm_table.setHorizontalHeaderLabels(["画像", "ファイル名", "ステージ", "タイプ", "プリセット", "メッセージ"])
+        self.vlm_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.vlm_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.vlm_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.vlm_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.vlm_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.vlm_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        vlm_layout.addWidget(self.vlm_table)
+        self.addTab(self.vlm_tab, "VLMプログレス")
     
     def _create_save_tab(self):
         """保存タブ作成"""
@@ -272,6 +286,47 @@ class ResultViewer(QTabWidget):
         # 保存ボタン有効化
         self.save_json_btn.setEnabled(True)
         self.save_markdown_btn.setEnabled(True)
+
+    # --- VLM progress ---
+    def append_vlm_event(self, ev: Dict):
+        try:
+            row = self.vlm_table.rowCount()
+            self.vlm_table.insertRow(row)
+            # 画像
+            img_path = ev.get('path') or ''
+            if img_path and Path(img_path).exists():
+                img = QImage(str(img_path))
+                if not img.isNull():
+                    pm = QPixmap.fromImage(img).scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    lbl = QLabel()
+                    lbl.setPixmap(pm)
+                    self.vlm_table.setCellWidget(row, 0, lbl)
+                else:
+                    self.vlm_table.setItem(row, 0, QTableWidgetItem(""))
+            else:
+                self.vlm_table.setItem(row, 0, QTableWidgetItem(""))
+            # 他の列
+            self.vlm_table.setItem(row, 1, QTableWidgetItem(ev.get('file', '')))
+            self.vlm_table.setItem(row, 2, QTableWidgetItem(ev.get('stage', '')))
+            self.vlm_table.setItem(row, 3, QTableWidgetItem(str(ev.get('type', ''))))
+            self.vlm_table.setItem(row, 4, QTableWidgetItem(str(ev.get('preset', ''))))
+            # メッセージ
+            msg = ''
+            if ev.get('stage') in ('export', 'cleanup'):
+                msg = ev.get('path', '')
+            elif 'caption' in ev and ev['caption']:
+                msg = ev['caption']
+            elif 'info' in ev and isinstance(ev['info'], dict):
+                msg = ev['info'].get('reason', '')
+            self.vlm_table.setItem(row, 5, QTableWidgetItem(msg))
+        except Exception:
+            pass
+
+    def focus_vlm_tab(self):
+        try:
+            self.setCurrentWidget(self.vlm_tab)
+        except Exception:
+            pass
     
     def _save_json(self):
         """JSON保存"""

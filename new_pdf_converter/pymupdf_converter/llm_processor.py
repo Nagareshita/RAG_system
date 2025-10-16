@@ -1,24 +1,31 @@
 # src/pdf/pymupdf4llm/processor.py (修正版)
 import hashlib
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Callable, Optional
 import traceback
 
 import pymupdf4llm
 
 from .llm_models import ProcessedDocument, DocumentMetadata, ProcessingSettings
 from .llm_chunker import MarkdownChunker
+from utils.log_manager import LogManager
+from utils.node_threshold_manager import NodeThresholdManager
+from utils.key_registry import KeyRegistry
+from utils.agents.vlm_executor import VLMExecutor
+from vlm.model_manager import ModelManager
+from vlm.caption_maker.type_config import DEFAULT_TYPE_MAP, CLASSIFIER_PARAMS, CLASSIFIER_PROMPT
 
 class PyMuPDFProcessor:
     """PyMuPDF4LLM処理器（エラーハンドリング強化版）"""
     
-    def __init__(self, settings: ProcessingSettings = None):
+    def __init__(self, settings: ProcessingSettings = None, progress_cb: Optional[Callable[[Dict], None]] = None):
         self.settings = settings or ProcessingSettings()
         self.chunker = MarkdownChunker(
             max_chunk_size=self.settings.chunk_size,
             overlap_size=self.settings.overlap_size,
             rag_emit_page=(self.settings.rag_settings or {}).get("emit_page_number", True)
         )
+        self.progress_cb = progress_cb
     
     def process_pdf(self, pdf_path: str) -> ProcessedDocument:
         """PDF処理メイン（エラーハンドリング強化）"""
@@ -37,7 +44,24 @@ class PyMuPDFProcessor:
             # 2. メタデータ作成
             print("📋 メタデータ作成中...")
             doc_metadata = self._create_metadata(pdf_path)
-            
+
+            # 2.5 画像キャプション（write_imagesかつgenerate_captionsが有効な場合）
+            try:
+                kwargs = self._filter_supported_kwargs(self.settings.pymupdf_kwargs or {})
+                write_images_on = bool(kwargs.get("write_images")) and not bool(kwargs.get("embed_images"))
+                if getattr(self.settings, 'generate_captions', False) and write_images_on:
+                    base_dir = Path(__file__).resolve().parents[1]  # new_pdf_converter
+                    images_dir = base_dir / "images"
+                    caption_dir = base_dir / "caption"
+                    print(f"🖼️ 画像キャプション生成中... ({images_dir})")
+                    mapping = self._classify_and_caption_stream(images_dir, caption_dir)
+                    if mapping:
+                        # Markdown画像タグ全体をキャプションに置換
+                        markdown_text = self._replace_markdown_images(markdown_text, mapping)
+                        print(f"✅ キャプション置換完了: {len(mapping)}件")
+            except Exception as e:
+                print(f"⚠️ 画像キャプション生成スキップ: {e}")
+
             # 3. チャンク分割（安全実行）
             print("✂️ チャンク分割中...")
             chunks = self.chunker.chunk_markdown(markdown_text, doc_metadata)
@@ -169,10 +193,196 @@ class PyMuPDFProcessor:
                 else:
                     print("⚠️ margins を無効化（形式不正）:", filtered.get("margins"))
                     filtered.pop("margins", None)
+            # 画像出力先を固定フォルダに設定（pdf_converter.py がある new_pdf_converter/images）
+            try:
+                if filtered.get("write_images") and not filtered.get("embed_images"):
+                    base_dir = Path(__file__).resolve().parents[1]  # new_pdf_converter
+                    img_dir = base_dir / "images"
+                    img_dir.mkdir(parents=True, exist_ok=True)
+                    filtered["image_path"] = str(img_dir)
+            except Exception as _e:
+                print(f"⚠️ 画像出力先の自動設定に失敗: {_e}")
             return filtered
         except Exception:
             # 失敗時はそのまま返す（下流でTypeErrorが出た場合は上位で処理）
             return dict(kwargs or {})
+
+
+    # --- VLM captioning (streaming with progress) ---
+    def _build_vlm_env(self):
+        cfg = {
+            'nodes': [{'id': '1', 'type': 'vlm'}],
+            'node_thresholds': {'1': {}},
+            'logging': {'default_level': 'MINIMAL', 'node_specific_levels': {'1': 'MINIMAL'}},
+        }
+        log = LogManager(cfg)
+        thr = NodeThresholdManager(cfg)
+        mm = ModelManager()
+        mm.setup_model()
+        vlm = VLMExecutor(log, thr, model_manager=mm)
+        vlm.set_node_config({}, '1')
+        return log, thr, vlm, mm
+
+    def _set_thresholds(self, thr: NodeThresholdManager, params: Dict):
+        node_id = '1'
+        for k, v in params.items():
+            try:
+                thr.set_value(node_id, k, v)
+            except Exception:
+                pass
+
+    def _parse_classification(self, text: str) -> Dict[str, str]:
+        import json as _json
+        try:
+            obj = _json.loads(text)
+            if isinstance(obj, dict):
+                t = obj.get('type')
+                conf = obj.get('confidence', 0.0)
+                reason = obj.get('reason', '')
+                return {'type': t, 'confidence': str(conf), 'reason': reason}
+        except Exception:
+            pass
+        low = (text or '').lower()
+        t = None
+        for cand in list(DEFAULT_TYPE_MAP.keys()):
+            if cand in low:
+                t = cand
+                break
+        return {'type': t or 'natural_image', 'confidence': '0.3', 'reason': (text or '')[:200]}
+
+    def _emit_progress(self, ev: Dict):
+        try:
+            if callable(self.progress_cb):
+                self.progress_cb(ev)
+        except Exception:
+            pass
+
+    def _make_xlsx(self, out_dir: Path, results: List[Dict]):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        xlsx_path = out_dir / 'captions.xlsx'
+        try:
+            from openpyxl import Workbook
+            from openpyxl.drawing.image import Image as XLImage
+            wb = Workbook()
+            ws = wb.active
+            ws.title = 'captions'
+            ws.append(['file', 'path', 'type', 'preset', 'caption', 'image'])
+            # 画像列の幅と最大貼り付けサイズ（控えめに調整）
+            max_w_px, max_h_px = 240, 140
+            try:
+                ws.column_dimensions['F'].width = max_w_px / 7.0
+            except Exception:
+                pass
+            row = 2
+            for r in results:
+                ws.append([r.get('file'), r.get('path'), r.get('type'), r.get('preset'), r.get('caption'), ''])
+                img_path = r.get('path')
+                try:
+                    if img_path and Path(img_path).exists():
+                        xlimg = XLImage(img_path)
+                        try:
+                            w0 = getattr(xlimg, 'width', None)
+                            h0 = getattr(xlimg, 'height', None)
+                            if w0 and h0 and w0 > 0 and h0 > 0:
+                                scale = min(max_w_px / float(w0), max_h_px / float(h0), 1.0)
+                                xlimg.width = int(w0 * scale)
+                                xlimg.height = int(h0 * scale)
+                                ws.row_dimensions[row].height = xlimg.height * 0.75
+                        except Exception:
+                            pass
+                        cell = f'F{row}'
+                        ws.add_image(xlimg, cell)
+                except Exception:
+                    pass
+                row += 1
+            wb.save(str(xlsx_path))
+            return True, str(xlsx_path)
+        except Exception as e:
+            print(f'⚠️ XLSX出力に失敗しました: {e}')
+            # フォールバック: CSV
+            try:
+                import csv
+                csv_path = out_dir / 'captions.csv'
+                with csv_path.open('w', newline='', encoding='utf-8-sig') as f:
+                    w = csv.DictWriter(f, fieldnames=['file', 'path', 'type', 'preset', 'caption'])
+                    w.writeheader()
+                    for r in results:
+                        w.writerow({k: r.get(k, '') for k in ['file', 'path', 'type', 'preset', 'caption']})
+                return False, str(csv_path)
+            except Exception as e2:
+                print(f'❌ CSV出力にも失敗しました: {e2}')
+                return False, None
+
+    def _clear_images_dir(self, images_dir: Path):
+        try:
+            exts = {'.png', '.jpg', '.jpeg', '.bmp', '.webp'}
+            for p in images_dir.glob('*'):
+                if p.suffix.lower() in exts:
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _classify_and_caption_stream(self, images_dir: Path, out_dir: Path) -> Dict[str, str]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _, thr, vlm, _ = self._build_vlm_env()
+        # 画像収集
+        imgs: List[Path] = []
+        for ext in ('*.png', '*.jpg', '*.jpeg', '*.bmp', '*.webp'):
+            imgs.extend(sorted(images_dir.glob(ext)))
+
+        results: List[Dict] = []
+        path_to_caption: Dict[str, str] = {}
+
+        total = len(imgs)
+        for idx, p in enumerate(imgs, start=1):
+            # 1) classify
+            self._emit_progress({'stage': 'classify_start', 'index': idx, 'total': total, 'file': p.name, 'path': str(p)})
+            self._set_thresholds(thr, CLASSIFIER_PARAMS.to_clean_dict())
+            resp = vlm.execute({KeyRegistry.USER_QUERY: CLASSIFIER_PROMPT, KeyRegistry.IMAGE_PATH: str(p)}, node_id='1')
+            if resp.has_error:
+                ctype = 'natural_image'
+                parsed = {'type': ctype, 'confidence': '0.0', 'reason': resp.data.get('error', '')}
+            else:
+                text = resp.data.get(KeyRegistry.VLM_ANSWER, '')
+                parsed = self._parse_classification(text)
+                ctype = parsed.get('type') or 'natural_image'
+                if ctype not in DEFAULT_TYPE_MAP:
+                    ctype = 'natural_image'
+            self._emit_progress({'stage': 'classify_done', 'file': p.name, 'path': str(p), 'type': ctype, 'info': parsed})
+
+            # 2) caption
+            entry = DEFAULT_TYPE_MAP[ctype]
+            caption_params = entry['params'].to_clean_dict()
+            preset = caption_params.get('preset')
+            self._emit_progress({'stage': 'caption_start', 'file': p.name, 'path': str(p), 'type': ctype, 'preset': preset})
+            self._set_thresholds(thr, caption_params)
+            cap_resp = vlm.execute({KeyRegistry.USER_QUERY: entry['prompt'], KeyRegistry.IMAGE_PATH: str(p)}, node_id='1')
+            caption = cap_resp.data.get(KeyRegistry.VLM_ANSWER, '') if not cap_resp.has_error else ''
+            self._emit_progress({'stage': 'caption_done', 'file': p.name, 'path': str(p), 'type': ctype, 'preset': preset, 'caption': caption[:200]})
+
+            results.append({
+                'file': p.name,
+                'path': str(p.resolve()),
+                'type': ctype,
+                'preset': preset,
+                'caption': caption,
+            })
+            path_to_caption[str(p.resolve())] = caption
+
+        # 出力: XLSX（失敗時CSV）
+        ok, out_path = self._make_xlsx(out_dir, results)
+        self._emit_progress({'stage': 'export', 'format': 'xlsx' if ok else 'csv', 'path': out_path})
+
+        # 画像フォルダをクリア
+        self._clear_images_dir(images_dir)
+        self._emit_progress({'stage': 'cleanup', 'path': str(images_dir)})
+
+        return path_to_caption
+
+
 
     def _coerce_margins(self, val):
         """marginsを to_markdown が期待する形式へ矯正"""
@@ -365,36 +575,55 @@ class PyMuPDFProcessor:
             return {}
 
     def _apply_rag_metadata(self, chunks, doc_metadata: DocumentMetadata):
-        """RAGメタ設定を簡易的にチャンクへ反映"""
-        try:
-            rag = self.settings.rag_settings or {}
-            emit_source_title = rag.get("emit_source_title", True)
-            emit_page_number = rag.get("emit_page_number", True)
-            emit_toc_section = rag.get("emit_toc_section", True)
+        """RAGメタ付与は廃止（何もしない）"""
+        return
 
-            for ch in chunks or []:
-                md = getattr(ch, 'chunk_metadata', None)
-                if not md:
-                    continue
-                # source title
-                if emit_source_title and doc_metadata and doc_metadata.filename:
-                    if doc_metadata.filename not in md.keywords:
-                        md.keywords.append(doc_metadata.filename)
-                # page number（セクションタイトルが"Page N"のとき）
-                if emit_page_number and md.section_title:
-                    st = md.section_title.strip().lower()
-                    if st.startswith('page '):
-                        try:
-                            pg = int(st.split(' ', 1)[1].split()[0])
-                            tag = f"page:{pg}"
-                            if tag not in md.keywords:
-                                md.keywords.append(tag)
-                        except Exception:
-                            pass
-                # toc section
-                if emit_toc_section and md.section_title:
-                    tag = f"toc:{md.section_title}"
-                    if tag not in md.keywords:
-                        md.keywords.append(tag)
-        except Exception:
-            return
+    def _replace_markdown_images(self, markdown_text: str, mapping: Dict[str, str]) -> str:
+        """本番用: Markdown/HTMLの画像参照を、captions.xlsx と同一キー（正規化済みパス）で
+        1:1 のキャプションに置換する。
+
+        - Markdown: ![alt](path), ![alt]("path"), ![alt]('path') に対応
+        - HTML: <img src="path"> と <img src='path'> に対応
+        - 照合はパスを正規化（区切りを/化・小文字化・前後空白除去）して行う
+        """
+        import re
+
+        def norm(s: str) -> str:
+            return (s or "").replace("\\", "/").lower().strip()
+
+        # 正規化済みのキーでマップを作り直す
+        norm_map: Dict[str, str] = {norm(k): v for k, v in mapping.items() if k}
+
+        out = markdown_text
+
+        # Markdown image: ![alt](url) or quoted url
+        md_pat = re.compile(r"!\[[^\]]*\]\(\s*(?P<url>\"[^\"]+\"|'[^']+'|[^\s)]+)\s*\)")
+
+        def _md_repl(m: re.Match) -> str:
+            raw = m.group("url")
+            if raw and ((raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'"))):
+                url = raw[1:-1]
+            else:
+                url = raw
+            cap = norm_map.get(norm(url))
+            return cap if cap is not None else m.group(0)
+
+        out = md_pat.sub(_md_repl, out)
+
+        # HTML image: <img ... src="url" ...> or src='url'
+        html_pat = re.compile(r"<img[^>]*?src=\"(?P<url>[^\"]+)\"[^>]*?>|<img[^>]*?src='(?P<url2>[^']+)'[^>]*?>", re.IGNORECASE)
+
+        def _html_repl(m: re.Match) -> str:
+            url = m.group("url") if m.groupdict().get("url") else m.group("url2")
+            cap = norm_map.get(norm(url))
+            return cap if cap is not None else m.group(0)
+
+        out = html_pat.sub(_html_repl, out)
+
+        return out
+
+
+
+
+
+

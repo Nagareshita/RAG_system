@@ -24,6 +24,8 @@ class ChunkMetadata:
     """チャンクメタデータ"""
     section_title: str = ""
     section_level: int = 0
+    # 追加: ページ番号（contentに混在させず、明示フィールドに格納）
+    page: Optional[int] = None
     chunk_index: int = 0
     chunk_type: str = "text"  # text, formula, table, code
     token_count: int = 0
@@ -59,3 +61,5 @@ class ProcessingSettings:
     # 追加: PyMuPDF4LLMへの引数 / RAGメタ設定
     pymupdf_kwargs: dict = field(default_factory=dict)
     rag_settings: dict = field(default_factory=dict)
+    # 追加: 画像キャプション自動生成（write_imagesが有効時のみ）
+    generate_captions: bool = False

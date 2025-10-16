@@ -1,0 +1,21 @@
+{
+    "auto_map": {
+        "AutoImageProcessor": "image_processing_sailvl.SAILVLImageProcessor",
+        "AutoProcessor": "processing_sailvl.SAILVLProcessor"
+    },
+    "max_dynamic_patch": 10,
+    "patch_size": 14,
+    "image_size": 448,
+    "use_msac": false,
+    "image_mean": [
+        0.485,
+        0.456,
+        0.406
+    ],
+    "image_std": [
+        0.229,
+        0.224,
+        0.225
+    ],
+    "pad_input": true
+}

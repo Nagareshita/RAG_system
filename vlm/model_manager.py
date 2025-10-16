@@ -36,6 +36,8 @@ class ModelManager:
     }
     
     # タスク別プリセット
+    # 注意: use_cacheはmodeling_sailvl.pyで強制的にTrueが設定されるため、
+    #       ここでは設定しない（二重設定エラー回避）
     TASK_PRESETS = {
         # 既存互換（シンプル）
         "accurate": {  # 正確性重視/OCR寄り
@@ -62,7 +64,8 @@ class ModelManager:
 
         # 提案プリセット（リクエスト準拠）
         "ocr": {
-            "do_sample": False, "num_beams": 5, "length_penalty": 1.1,
+            "do_sample": False, "num_beams": 5,
+            "length_penalty": 1.1,
             "min_new_tokens": 120, "max_new_tokens": 2048,
             "no_repeat_ngram_size": 4, "repetition_penalty": 1.05
         },
@@ -286,7 +289,7 @@ class ModelManager:
         preset: Optional[str] = None,
     ) -> str:
         """
-        テキスト・画像から応答を生成
+        テキスト・画像から応答を生成（メモリ最適化版）
         
         Args:
             text: 入力テキスト
@@ -311,66 +314,149 @@ class ModelManager:
         if self.model is None or self.processor is None:
             raise RuntimeError("モデルが初期化されていません")
         
-        # パラメータ設定（優先順位: デフォルト < preset < 個別指定）
-        gen_config = self.DEFAULT_GENERATION_CONFIG.copy()
+        # 変数を事前定義（finally句で確実にクリーンアップするため）
+        inputs = None
+        outputs = None
+        response = None
         
-        # プリセット適用
-        if preset and preset in self.TASK_PRESETS:
-            gen_config.update(self.TASK_PRESETS[preset])
+        try:
+            # パラメータ設定（優先順位: デフォルト < preset < 個別指定）
+            gen_config = self.DEFAULT_GENERATION_CONFIG.copy()
+            
+            # プリセット適用
+            if preset and preset in self.TASK_PRESETS:
+                gen_config.update(self.TASK_PRESETS[preset])
+            
+            # 個別指定パラメータで上書き
+            if max_new_tokens is not None:
+                gen_config["max_new_tokens"] = max_new_tokens
+            if min_new_tokens is not None:
+                gen_config["min_new_tokens"] = min_new_tokens
+            if temperature is not None:
+                gen_config["temperature"] = temperature
+            if top_p is not None:
+                gen_config["top_p"] = top_p
+            if top_k is not None:
+                gen_config["top_k"] = top_k
+            if do_sample is not None:
+                gen_config["do_sample"] = do_sample
+            if num_beams is not None:
+                gen_config["num_beams"] = num_beams
+            if length_penalty is not None:
+                gen_config["length_penalty"] = length_penalty
+            if no_repeat_ngram_size is not None:
+                gen_config["no_repeat_ngram_size"] = no_repeat_ngram_size
+            if diversity_penalty is not None:
+                gen_config["diversity_penalty"] = diversity_penalty
+            if early_stopping is not None:
+                gen_config["early_stopping"] = early_stopping
+            if repetition_penalty is not None:
+                gen_config["repetition_penalty"] = repetition_penalty
+            
+            # 🔥 重要: use_cacheはmodeling_sailvl.pyで強制的にTrueが設定されるため、
+            #         ここでは設定しない（二重設定による"got multiple values"エラー回避）
+            # 参考: vlm/SAIL-VL2-2B/modeling_sailvl.py:345 で use_cache=True がハードコード
+            
+            # メッセージ構築
+            content = []
+            if image is not None:
+                content.append({"type": "image"})
+            content.append({"type": "text", "text": text})
+            
+            messages = [{"role": "user", "content": content}]
+            
+            # 入力を準備
+            text_prompt = self.processor.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False
+            )
+            inputs = self.processor(images=image, text=text_prompt, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
+            
+            # 推論
+            with torch.no_grad():
+                outputs = self.model.generate(**inputs, **gen_config)
+            
+            # デコード
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # プロンプト部分を除去
+            if "<|im_start|>assistant" in response:
+                response = response.split("<|im_start|>assistant")[-1].strip()
+            
+            return response
         
-        # 個別指定パラメータで上書き
-        if max_new_tokens is not None:
-            gen_config["max_new_tokens"] = max_new_tokens
-        if min_new_tokens is not None:
-            gen_config["min_new_tokens"] = min_new_tokens
-        if temperature is not None:
-            gen_config["temperature"] = temperature
-        if top_p is not None:
-            gen_config["top_p"] = top_p
-        if top_k is not None:
-            gen_config["top_k"] = top_k
-        if do_sample is not None:
-            gen_config["do_sample"] = do_sample
-        if num_beams is not None:
-            gen_config["num_beams"] = num_beams
-        if length_penalty is not None:
-            gen_config["length_penalty"] = length_penalty
-        if no_repeat_ngram_size is not None:
-            gen_config["no_repeat_ngram_size"] = no_repeat_ngram_size
-        if diversity_penalty is not None:
-            gen_config["diversity_penalty"] = diversity_penalty
-        if early_stopping is not None:
-            gen_config["early_stopping"] = early_stopping
-        if repetition_penalty is not None:
-            gen_config["repetition_penalty"] = repetition_penalty
+        finally:
+            # 🔥 重要: メモリクリーンアップを確実に実行
+            self._cleanup_after_generation(inputs, outputs)
+    
+    def _cleanup_after_generation(self, inputs: Optional[Dict] = None, outputs: Optional[torch.Tensor] = None):
+        """
+        生成後のメモリクリーンアップ（OSダウン防止の最重要処理）
+        """
+        import gc
         
-        # メッセージ構築
-        content = []
-        if image is not None:
-            content.append({"type": "image"})
-        content.append({"type": "text", "text": text})
+        # 入力テンソルの削除
+        if inputs is not None:
+            for key in list(inputs.keys()):
+                if isinstance(inputs[key], torch.Tensor):
+                    del inputs[key]
+            del inputs
         
-        messages = [{"role": "user", "content": content}]
+        # 出力テンソルの削除
+        if outputs is not None:
+            del outputs
         
-        # 入力を準備
-        text_prompt = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False
-        )
-        inputs = self.processor(images=image, text=text_prompt, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
+        # モデルのキャッシュクリア（past_key_valuesなどの累積防止）
+        if self.model is not None:
+            # KVキャッシュが存在する場合はクリア
+            if hasattr(self.model, 'past_key_values'):
+                self.model.past_key_values = None
         
-        # 推論
-        with torch.no_grad():
-            outputs = self.model.generate(**inputs, **gen_config)
+        # Python GC実行
+        gc.collect()
         
-        # デコード
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # CUDA メモリキャッシュクリア（重要！）
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # GPU処理の完全同期
+    
+    def cleanup_model(self):
+        """
+        モデルの完全クリーンアップ（ワークフロー終了時用）
+        """
+        import gc
         
-        # プロンプト部分を除去
-        if "<|im_start|>assistant" in response:
-            response = response.split("<|im_start|>assistant")[-1].strip()
+        print("VLMモデルのクリーンアップ開始...")
         
-        return response
+        # モデルをCPUに移動してからメモリ解放
+        if self.model is not None:
+            try:
+                self.model.cpu()
+            except:
+                pass
+            del self.model
+            self.model = None
+        
+        # トークナイザー削除
+        if self.tokenizer is not None:
+            del self.tokenizer
+            self.tokenizer = None
+        
+        # プロセッサー削除
+        if self.processor is not None:
+            del self.processor
+            self.processor = None
+        
+        # Python GC強制実行
+        gc.collect()
+        
+        # CUDA完全クリーンアップ
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            torch.cuda.ipc_collect()  # プロセス間共有メモリもクリア
+        
+        print("VLMモデルのクリーンアップ完了")
     
     def get_device_info(self) -> Dict[str, Any]:
         """デバイス情報を取得"""

@@ -563,7 +563,7 @@ class NodeSettingsManager:
             return []
     
     def _save_vlm_config(self, node):
-        """VLM設定を保存"""
+        """VLM設定を保存（全パラメータ対応版）"""
         node_id = node['id']
         
         try:
@@ -571,20 +571,27 @@ class NodeSettingsManager:
                 # UIから現在の設定値を取得
                 current_config = self.vlm_settings.get_ui_config(node_id)
                 
-                # VLM生成パラメータを保存
-                if 'temperature' in current_config:
-                    node['config']['temperature'] = current_config['temperature']
+                # すべてのVLM生成パラメータを保存
+                vlm_params = [
+                    'preset', 'temperature', 'top_p', 'top_k', 'do_sample',
+                    'max_new_tokens', 'min_new_tokens', 'repetition_penalty',
+                    'no_repeat_ngram_size', 'num_beams', 'length_penalty',
+                    'diversity_penalty', 'early_stopping'
+                ]
                 
-                if 'top_p' in current_config:
-                    node['config']['top_p'] = current_config['top_p']
+                for param in vlm_params:
+                    if param in current_config:
+                        node['config'][param] = current_config[param]
                 
-                if 'top_k' in current_config:
-                    node['config']['top_k'] = current_config['top_k']
+                # ログレベル保存
+                if 'logging_level' in current_config:
+                    node['config']['logging_level'] = current_config['logging_level']
+                    node['config']['log_level'] = current_config['logging_level']
                 
-                if 'max_new_tokens' in current_config:
-                    node['config']['max_new_tokens'] = current_config['max_new_tokens']
-                
-                print(f"VLM設定保存完了: ID={node_id}, config={node['config']}")
+                print(f"VLM設定保存完了: ID={node_id}")
+                print(f"  - 保存されたパラメータ数: {len([p for p in vlm_params if p in current_config])}")
+                if 'preset' in current_config:
+                    print(f"  - プリセット: {current_config['preset']}")
                 
         except Exception as e:
             print(f"VLM設定保存エラー: {e}")
@@ -668,17 +675,28 @@ class NodeSettingsManager:
         try:
             default_config = VLMConfig.get_default_config()
             
-            if dpg.does_item_exist(f"temperature_{node_id}"):
-                dpg.set_value(f"temperature_{node_id}", default_config['temperature'])
-            if dpg.does_item_exist(f"top_p_{node_id}"):
-                dpg.set_value(f"top_p_{node_id}", default_config['top_p'])
-            if dpg.does_item_exist(f"top_k_{node_id}"):
-                dpg.set_value(f"top_k_{node_id}", default_config['top_k'])
-            if dpg.does_item_exist(f"max_new_tokens_{node_id}"):
-                dpg.set_value(f"max_new_tokens_{node_id}", default_config['max_new_tokens'])
+            # すべてのパラメータをデフォルトに戻す
+            all_keys = [
+                'preset', 'temperature', 'top_p', 'top_k', 'do_sample',
+                'max_new_tokens', 'min_new_tokens', 'repetition_penalty',
+                'no_repeat_ngram_size', 'num_beams', 'length_penalty',
+                'diversity_penalty', 'early_stopping', 'logging_level'
+            ]
+            
+            for key in all_keys:
+                tag = f"{key}_{node_id}"
+                if dpg.does_item_exist(tag):
+                    default_value = default_config.get(key)
+                    
+                    # プリセットの場合は表示名に変換
+                    if key == 'preset' and default_value is None:
+                        default_value = 'なし（カスタム設定）'
+                    
+                    dpg.set_value(tag, default_value)
                 
-            # ノード設定も更新
-            node['config'] = default_config.copy()
+                # ノード設定も更新
+                if key in default_config:
+                    node['config'][key] = default_config[key]
             
         except Exception as e:
             print(f"VLMフォールバックリセットエラー: {e}")
@@ -895,14 +913,25 @@ class NodeSettingsManager:
         return ui_config
     
     def _convert_node_config_to_vlm_ui(self, node_config):
-        """ノード設定をVLM UI用設定に変換"""
+        """ノード設定をVLM UI用設定に変換（全パラメータ対応版）"""
         default_config = VLMConfig.get_default_config()
         ui_config = default_config.copy()
         
-        # VLMの生成パラメータを変換
-        for field in ['temperature', 'top_p', 'top_k', 'max_new_tokens']:
+        # VLMのすべての生成パラメータを変換
+        vlm_params = [
+            'preset', 'temperature', 'top_p', 'top_k', 'do_sample',
+            'max_new_tokens', 'min_new_tokens', 'repetition_penalty',
+            'no_repeat_ngram_size', 'num_beams', 'length_penalty',
+            'diversity_penalty', 'early_stopping', 'logging_level'
+        ]
+        
+        for field in vlm_params:
             if field in node_config:
                 ui_config[field] = node_config[field]
+        
+        # log_levelの互換性処理
+        if 'log_level' in node_config and 'logging_level' not in node_config:
+            ui_config['logging_level'] = node_config['log_level']
         
         return ui_config
     

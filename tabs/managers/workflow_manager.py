@@ -50,6 +50,9 @@ class WorkflowManager(QThread):
             results = workflow.execute(self.prompt, initial_state=initial_state)
             self.result_signal.emit(results)
             
+            # 🔥 重要: 実行完了後のメモリクリーンアップは既にworkflow.execute内で実行済み
+            # （LangGraphWorkflowEngine._cleanup_after_execution()がfinally句で自動実行）
+            
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()

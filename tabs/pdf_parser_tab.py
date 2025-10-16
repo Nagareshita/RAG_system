@@ -7,20 +7,19 @@ pdf_converterフォルダのロジックを移植
 import sys
 from pathlib import Path
 
-# pdf_converterの依存関係をパスに追加
+# new_pdf_converter の依存関係をパスに追加
 project_root = Path(__file__).resolve().parent.parent
-pdf_converter_path = project_root / "pdf_converter"
-sys.path.insert(0, str(pdf_converter_path))
-sys.path.insert(0, str(pdf_converter_path / "src"))
+new_pdf_converter_path = project_root / "new_pdf_converter"
+sys.path.insert(0, str(new_pdf_converter_path))
 
 import json
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QMessageBox
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QMessageBox, QSplitter
+from PySide6.QtCore import QThread, Signal, Qt
 
-from src.pdf.pymupdf4llm.models import ProcessedDocument
-from src.apps.pymupdf_converter.ui.control_panel import ControlPanel
-from src.apps.pymupdf_converter.ui.result_viewer import ResultViewer
-from src.apps.pymupdf_converter.workers.pdf_processor import PDFProcessorWorker
+from pymupdf_converter.llm_models import ProcessedDocument
+from pymupdf_converter.control_panel import ControlPanel
+from pymupdf_converter.result_viewer import ResultViewer
+from pymupdf_converter.pdf_processor import PDFProcessorWorker
 
 class PDFParserTab(QWidget):
     """PDF解析タブ"""
@@ -35,14 +34,21 @@ class PDFParserTab(QWidget):
     def _setup_ui(self):
         """UI構築"""
         layout = QHBoxLayout(self)
-        
+
+        splitter = QSplitter(Qt.Horizontal)
+
         # コントロールパネル
         self.control_panel = ControlPanel()
-        layout.addWidget(self.control_panel, 1)
-        
+        splitter.addWidget(self.control_panel)
+
         # 結果ビューアー
         self.result_viewer = ResultViewer()
-        layout.addWidget(self.result_viewer, 2)
+        splitter.addWidget(self.result_viewer)
+
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+
+        layout.addWidget(splitter)
     
     def _connect_signals(self):
         """シグナル接続"""
@@ -58,7 +64,26 @@ class PDFParserTab(QWidget):
         self.worker.progress_updated.connect(self.control_panel.update_status)
         self.worker.processing_completed.connect(self._on_processing_completed)
         self.worker.error_occurred.connect(self._on_error_occurred)
+        # VLM進捗を結果ビューへ反映
+        try:
+            self.worker.vlm_progress.connect(self._on_vlm_progress)
+        except Exception:
+            pass
         self.worker.start()
+
+    def _on_vlm_progress(self, ev: dict):
+        try:
+            # キャプション開始のタイミングで自動的にVLMプログレスタブへ切り替え
+            if ev.get('stage') == 'caption_start':
+                if hasattr(self.result_viewer, 'focus_vlm_tab'):
+                    self.result_viewer.focus_vlm_tab()
+        except Exception:
+            pass
+        # 逐次行追加
+        try:
+            self.result_viewer.append_vlm_event(ev)
+        except Exception:
+            pass
     
     def _on_processing_completed(self, result: ProcessedDocument):
         """処理完了"""

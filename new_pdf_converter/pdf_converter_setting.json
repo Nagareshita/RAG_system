@@ -1,0 +1,172 @@
+{
+  "pymupdf4llm_params": [
+    {
+      "key": "page_chunks",
+      "label": "ページごとにチャンク化（page_chunks）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true,
+      "help": "trueにすると各ページごとの辞書リストを返し、page_numberやimages/tables等のメタを保持します（引用向け）。"
+    },
+    {
+      "key": "extract_words",
+      "label": "単語座標を抽出（extract_words）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": false,
+      "help": "trueでwords配列を付与。後段のハイライトや再レイアウト復元に有利。page_chunksは自動的に有効化されます。"
+    },
+    {
+      "key": "force_text",
+      "label": "重なりテキストも抽出（force_text）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true,
+      "help": "画像/ベクター重なりのテキストも抽出。数式や図中テキストの取りこぼしを減らします。"
+    },
+    {
+      "key": "ignore_images",
+      "label": "画像は無視（ignore_images）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": false,
+      "help": "スライド等で画像が多い場合にまずテキスト抽出を優先。後段でOCR/VLMを併用する戦略向け。"
+    },
+    {
+      "key": "ignore_graphics",
+      "label": "ベクター図形は無視（ignore_graphics）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": false,
+      "help": "図形が多すぎて遅い/崩れるケースで有効（ただし表検出も無効になります）。"
+    },
+    {
+      "key": "table_strategy",
+      "label": "表検出の方式（table_strategy）",
+      "type": "string",
+      "ui": "dropdown",
+      "options": ["lines_strict", "lines", "none"],
+      "default": "lines_strict",
+      "help": "表が崩れる場合はlines、速度優先や不要ならnone。"
+    },
+    {
+      "key": "write_images",
+      "label": "画像を書き出す（write_images）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true,
+      "help": "画像をファイルとして保存し、Markdown内に ![](path) を差し込みます（embed_imagesと排他）。"
+    },
+    {
+      "key": "embed_images",
+      "label": "画像をBase64埋め込み（embed_images）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": false,
+      "help": "MarkdownへBase64で直埋め。ファイルが散らからない代わりにサイズ増大。（write_imagesと排他）"
+    },
+    {
+      "key": "dpi",
+      "label": "画像DPI（dpi）",
+      "type": "integer",
+      "ui": "spin",
+      "min": 72,
+      "max": 600,
+      "step": 1,
+      "default": 200,
+      "enable_if": {"write_images": true},
+      "help": "式や図の可読性向上用。"
+    },
+    {
+      "key": "image_format",
+      "label": "画像形式（image_format）",
+      "type": "string",
+      "ui": "dropdown",
+      "options": ["png", "jpg"],
+      "default": "png",
+      "enable_if": {"write_images": true},
+      "help": "透過・可読性重視はpng。"
+    },
+    {
+      "key": "margins",
+      "label": "余白カット（margins）",
+      "type": "string",
+      "ui": "textbox",
+      "pattern": "^(\\d+|(\\d+,\\d+)|(\\d+,\\d+,\\d+,\\d+))$",
+      "default": "0",
+      "help": "上下一律: 20  / 上下: 20,20  / 上右下左: 10,15,10,15 のように指定。ヘッダ/フッタのノイズ除去。"
+    },
+    {
+      "key": "graphics_limit",
+      "label": "ベクター要素閾値（graphics_limit）",
+      "type": "integer",
+      "ui": "spin",
+      "min": 0,
+      "max": 20000,
+      "step": 100,
+      "default": 0,
+      "help": "要素数が閾値を超えたら図形無視（テキスト/表/画像は継続）。"
+    },
+    {
+      "key": "detect_bg_color",
+      "label": "背景色で不可視テキスト除外（detect_bg_color）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true,
+      "help": "背景と同色のテキストを無視して精度向上。"
+    },
+    {
+      "key": "use_glyphs",
+      "label": "グリフ番号で抽出（use_glyphs）",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true,
+      "help": "Unicodeが欠落したフォント対策。"
+    }
+  ],
+  "rag_metadata": [
+    {
+      "key": "emit_source_title",
+      "label": "文献名（ファイル名/Title）をメタに付与",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true
+    },
+    {
+      "key": "emit_page_number",
+      "label": "ページ番号（1-based）をメタに付与",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true
+    },
+    {
+      "key": "emit_toc_section",
+      "label": "目次セクション名をメタに付与",
+      "type": "boolean",
+      "ui": "checkbox",
+      "default": true
+    }
+  ],
+  "chunking": [
+    {
+      "key": "max_chunk_size",
+      "label": "最大チャンク文字数",
+      "type": "integer",
+      "ui": "spin",
+      "min": 100,
+      "max": 10000,
+      "step": 50,
+      "default": 1000
+    },
+    {
+      "key": "overlap_size",
+      "label": "オーバーラップ",
+      "type": "integer",
+      "ui": "spin",
+      "min": 0,
+      "max": 2000,
+      "step": 25,
+      "default": 100
+    }
+  ]
+}

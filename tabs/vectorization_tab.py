@@ -55,14 +55,11 @@ class VectorizationTab(QWidget):
         self.model_label = QLabel("モデル: BAAI/bge-m3")
         vector_layout.addWidget(self.model_label)
         
-        # コレクション選択設定（分離をデフォルトに）
-        from PySide6.QtWidgets import QSpinBox, QCheckBox, QComboBox
-        collection_layout = QHBoxLayout()
-        collection_layout.addWidget(QLabel("保存方式:"))
-        self.collection_combo = QComboBox()
-        self.collection_combo.addItems(["分離", "混合"])
-        collection_layout.addWidget(self.collection_combo)
-        vector_layout.addLayout(collection_layout)
+        # 保存方式は常に分離（混合は廃止）
+        from PySide6.QtWidgets import QSpinBox, QCheckBox
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("保存方式: 分離（固定）"))
+        vector_layout.addLayout(mode_layout)
         
         # パフォーマンス設定
         perf_layout = QHBoxLayout()
@@ -290,10 +287,6 @@ class VectorizationTab(QWidget):
             encode_batch_size = self.encode_batch_spinbox.value()
             max_text_length = self.max_text_length_spinbox.value()
 
-            # コレクションタイプ判定（シンプル化）
-            collection_choice = self.collection_combo.currentText()
-            # 直接UIの選択値を渡す
-            
             self.vector_manager.use_gpu = self.gpu_checkbox.isChecked()
 
             success = self.vector_manager.vectorize_documents(
@@ -302,8 +295,7 @@ class VectorizationTab(QWidget):
                 log_callback=update_log,
                 batch_size=batch_size,
                 encode_batch_size=encode_batch_size,  # 実際に使用されるように修正済み
-                max_text_length=max_text_length,
-                collection_type=collection_choice
+                max_text_length=max_text_length
             )
             
             if success:

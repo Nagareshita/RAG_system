@@ -15,7 +15,8 @@ class LogManager:
     def __init__(self, config_dict: Dict[str, Any]):
         """ログ設定を初期化（新形式node_specific_levels対応）"""
         log_config = config_dict.get("logging", {})
-        self._default_level = LogLevel[log_config.get("default_level", "VERBOSE")]
+        # デフォルトレベルは廃止（明示設定がない場合は出力しない）
+        self._default_level = None
         
         # 新形式: node_specific_levels対応
         node_levels = log_config.get("node_specific_levels", {})
@@ -59,7 +60,9 @@ class LogManager:
     
     def should_log(self, agent: str, target_level: LogLevel) -> bool:
         """指定レベルでログ出力すべきかを判定"""
-        agent_level = self._agent_levels.get(agent, self._default_level)
+        agent_level = self._agent_levels.get(agent)
+        if agent_level is None:
+            return False
         return target_level <= agent_level
     
     def log(self, agent: str, level: LogLevel, message: str, **kwargs) -> None:

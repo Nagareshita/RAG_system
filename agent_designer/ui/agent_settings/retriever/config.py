@@ -40,7 +40,9 @@ class RetrieverConfig:
             'label': '検索対象コレクション',
             'options': [
                 ('rag_documents_pdf', 'rag_documents_pdf（PDF検索）'),
-                ('rag_documents_ast', 'rag_documents_ast（AST検索）')
+                ('rag_documents_ast_packages', 'rag_documents_ast_packages（ASTパッケージ）'),
+                ('rag_documents_ast_functions', 'rag_documents_ast_functions（AST関数）'),
+                ('rag_documents_ast_equations', 'rag_documents_ast_equations（AST方程式）')
             ],
             'description': '検索対象のベクトルDBコレクション'
         },

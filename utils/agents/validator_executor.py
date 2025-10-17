@@ -47,9 +47,7 @@ class ValidatorExecutor(BaseAgentExecutor):
             
             # VERBOSEレベル時のみ詳細ログ（キー名修正）
             validator_key = f"validator_{node_id}"
-            is_verbose = (hasattr(self.log, '_agent_levels') and 
-                         (self.log._agent_levels.get('validator') == LogLevel.VERBOSE or
-                          self.log._agent_levels.get(validator_key) == LogLevel.VERBOSE))
+            is_verbose = self.log.should_log(validator_key, LogLevel.VERBOSE)
             
             if is_verbose:
                 self._log(LogLevel.VERBOSE, f"前段階信頼度: Retriever={retriever_confidence:.3f}, Expert={expert_confidence:.3f}", node_id)
@@ -286,9 +284,7 @@ class ValidatorExecutor(BaseAgentExecutor):
         
         # VERBOSEレベル時のプロンプト表示
         validator_key = f"validator_{self._node_config.get('node_id', 'unknown')}"
-        is_verbose = (hasattr(self.log, '_agent_levels') and 
-                     (self.log._agent_levels.get('validator') == LogLevel.VERBOSE or
-                      self.log._agent_levels.get(validator_key) == LogLevel.VERBOSE))
+        is_verbose = self.log.should_log(validator_key, LogLevel.VERBOSE)
         
         if is_verbose:
             self._log(LogLevel.VERBOSE, "=== Validator LLMプロンプト ===")

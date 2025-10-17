@@ -90,7 +90,7 @@ class RouterExecutor(BaseAgentExecutor):
                     # fallback: デフォルトルート
                     pass
             # VERBOSEレベル時のみ詳細状況ログ
-            if hasattr(self.log, '_agent_levels') and self.log._agent_levels.get('router') == LogLevel.VERBOSE:
+            if self.log.should_log(f"router_{node_id}", LogLevel.VERBOSE):
                 self._log(LogLevel.VERBOSE, f"現在の実行回数: {execution_count}/{max_iterations}", node_id)
                 self._log(LogLevel.VERBOSE, f"実行履歴件数: {len(execution_history)}", node_id)
 
@@ -112,13 +112,13 @@ class RouterExecutor(BaseAgentExecutor):
                 custom_expression = route.get("condition_details", {}).get("custom_expression", "")
 
                 # VERBOSE: ルート情報
-                if hasattr(self.log, '_agent_levels') and self.log._agent_levels.get('router') == LogLevel.VERBOSE:
+                if self.log.should_log(f"router_{node_id}", LogLevel.VERBOSE):
                     self._log(LogLevel.VERBOSE, f"ルート評価: {route_name}, target_node={target_node}, 条件数={len(conditions)}", node_id)
 
                 # 条件評価
                 if self._evaluate_conditions(conditions, custom_expression, current_data, node_id):
                     self._log(LogLevel.MINIMAL, f"ルート決定: {route_name} → Node {target_node}", node_id)
-                    if hasattr(self.log, '_agent_levels') and self.log._agent_levels.get('router') == LogLevel.VERBOSE:
+                    if self.log.should_log(f"router_{node_id}", LogLevel.VERBOSE):
                         self._log(LogLevel.VERBOSE, f"条件一致: {route_name}, target_node={target_node}", node_id)
 
                     # 実行カウンター更新
@@ -159,7 +159,7 @@ class RouterExecutor(BaseAgentExecutor):
 
             # どのルートにも一致しない場合
             self._log(LogLevel.MINIMAL, "どの条件にも一致せず: デフォルトルート", node_id)
-            if hasattr(self.log, '_agent_levels') and self.log._agent_levels.get('router') == LogLevel.VERBOSE:
+            if self.log.should_log(f"router_{node_id}", LogLevel.VERBOSE):
                 self._log(LogLevel.VERBOSE, f"デフォルトルート選択: {routing_rules[0].get('condition', 'default')} → Node {routing_rules[0].get('condition_details', {}).get('target_node', '')}", node_id)
 
             # デフォルトルートを設定（routing_rulesの最初のtarget_nodeを使用）
@@ -236,7 +236,7 @@ class RouterExecutor(BaseAgentExecutor):
                 continue
             
             # VERBOSEレベル時のみ詳細ログ
-            if hasattr(self.log, '_agent_levels') and self.log._agent_levels.get('router') == LogLevel.VERBOSE:
+            if self.log.should_log(f"router_{node_id}", LogLevel.VERBOSE):
                 self._log(LogLevel.VERBOSE, f"条件評価: {field}={value} {operator} {threshold}", node_id)
             
             # 条件評価

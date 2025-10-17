@@ -88,9 +88,7 @@ class RefinerExecutor(BaseAgentExecutor):
             
             # VERBOSEレベル判定
             log_name = f"refiner_{node_id}"
-            is_verbose = (hasattr(self.log, '_agent_levels') and 
-                         (self.log._agent_levels.get(log_name) == LogLevel.VERBOSE or
-                          self.log._agent_levels.get('refiner') == LogLevel.VERBOSE))
+            is_verbose = self.log.should_log(log_name, LogLevel.VERBOSE)
             
             if is_verbose:
                 self._log(LogLevel.VERBOSE, f"収集した専門家数: {len(expert_outputs)}", node_id)

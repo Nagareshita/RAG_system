@@ -6,6 +6,7 @@
 """
 
 from typing import Dict, Any, Optional
+from copy import deepcopy
 
 # サポートされるエージェントタイプのリスト
 CONFIG_CLASSES = [
@@ -41,33 +42,33 @@ def get_default_node_config(node_type: str) -> Dict[str, Any]:
     try:
         if node_type == "analyzer":
             from .analyzer.config import AnalyzerConfig
-            return AnalyzerConfig.DEFAULT_VALUES
+            return deepcopy(AnalyzerConfig.DEFAULT_VALUES)
         
         elif node_type == "retriever":
             from .retriever.config import RetrieverConfig
-            return RetrieverConfig.DEFAULT_VALUES
+            return deepcopy(RetrieverConfig.DEFAULT_VALUES)
         
         elif node_type == "domain_expert":
             from .domain_expert.config import DomainExpertConfig
-            return DomainExpertConfig.DEFAULT_VALUES
+            return deepcopy(DomainExpertConfig.DEFAULT_VALUES)
         
         elif node_type == "validator":
             from .validator.config import ValidatorConfig
-            return ValidatorConfig.DEFAULT_VALUES
+            return deepcopy(ValidatorConfig.DEFAULT_VALUES)
         
         elif node_type == "refiner":
             from .refiner.config import RefinerConfig
             # 注意: sectionsは含まない基本設定のみを返す
             # sectionsはUI初回表示時にのみデフォルト適用される
-            return RefinerConfig.DEFAULT_VALUES.copy()
+            return deepcopy(RefinerConfig.DEFAULT_VALUES)
         
         elif node_type == "router":
             from .router.config import RouterConfig
-            return RouterConfig.DEFAULT_VALUES
+            return deepcopy(RouterConfig.DEFAULT_VALUES)
         
         elif node_type == "vlm":
             from .vlm.config import VLMConfig
-            return VLMConfig.DEFAULT_VALUES.copy()
+            return deepcopy(VLMConfig.DEFAULT_VALUES)
         
         else:
             # 未知のエージェントタイプ

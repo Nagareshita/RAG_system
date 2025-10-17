@@ -3,6 +3,7 @@ import dearpygui.dearpygui as dpg
 
 # defaults.py から設定を読み込み
 import sys
+from copy import deepcopy
 from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -291,10 +292,22 @@ class NodeSettingsManager:
         try:
             if dpg.does_item_exist(f"target_collections_{node_id}"):
                 collection_text = dpg.get_value(f"target_collections_{node_id}")
-                if collection_text and "rag_documents_pdf" in collection_text:
-                    target_collection = 'rag_documents_pdf'
+                # コレクション名をそのまま使用（新しい3つのASTコレクションにも対応）
+                if collection_text:
+                    # テキストから実際のコレクション名を抽出
+                    if "rag_documents_pdf" in collection_text:
+                        target_collection = 'rag_documents_pdf'
+                    elif "rag_documents_ast_packages" in collection_text:
+                        target_collection = 'rag_documents_ast_packages'
+                    elif "rag_documents_ast_functions" in collection_text:
+                        target_collection = 'rag_documents_ast_functions'
+                    elif "rag_documents_ast_equations" in collection_text:
+                        target_collection = 'rag_documents_ast_equations'
+                    else:
+                        # デフォルト
+                        target_collection = 'rag_documents_pdf'
                 else:
-                    target_collection = 'rag_documents_ast'
+                    target_collection = 'rag_documents_pdf'
                 
                 node['config']['target_collections'] = [target_collection]
             
@@ -706,7 +719,7 @@ class NodeSettingsManager:
     def _convert_node_config_to_analyzer_ui(self, node_config):
         """ノード設定をAnalyzer UI用設定に変換"""
         default_config = AnalyzerConfig.get_default_config()
-        ui_config = default_config.copy()
+        ui_config = deepcopy(default_config)
         
         if 'analysis_depth' in node_config:
             analysis_depth_value = node_config['analysis_depth']
@@ -739,7 +752,7 @@ class NodeSettingsManager:
     def _convert_node_config_to_domain_expert_ui(self, node_config):
         """ノード設定をDomain Expert UI用設定に変換"""
         default_config = DomainExpertConfig.get_default_config()
-        ui_config = default_config.copy()
+        ui_config = deepcopy(default_config)
         
         if 'expertise_domain' in node_config:
             ui_config['expertise_domain'] = node_config['expertise_domain']
@@ -901,7 +914,7 @@ class NodeSettingsManager:
     def _convert_node_config_to_router_ui(self, node_config):
         """ノード設定をRouter UI用設定に変換"""
         default_config = RouterConfig.get_default_config()
-        ui_config = default_config.copy()
+        ui_config = deepcopy(default_config)
         
         for field in ['max_iterations', 'logging_level', 'routing_rules']:
             if field in node_config:
@@ -915,7 +928,7 @@ class NodeSettingsManager:
     def _convert_node_config_to_vlm_ui(self, node_config):
         """ノード設定をVLM UI用設定に変換（全パラメータ対応版）"""
         default_config = VLMConfig.get_default_config()
-        ui_config = default_config.copy()
+        ui_config = deepcopy(default_config)
         
         # VLMのすべての生成パラメータを変換
         vlm_params = [
@@ -954,7 +967,7 @@ class NodeSettingsManager:
     def _convert_node_config_to_validator_ui(self, node_config):
         """ノード設定をValidator UI用設定に変換"""
         default_config = ValidatorConfig.get_default_config()
-        ui_config = default_config.copy()
+        ui_config = deepcopy(default_config)
 
         for field in ['confidence_threshold', 'llm_max_tokens', 'minimum_source_count', 'logging_level']:
             if field in node_config:

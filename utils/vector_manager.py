@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 import uuid
 import hashlib
 import threading
@@ -263,6 +263,63 @@ class VectorManager:
         except Exception as e:
             return False
     
+    def add_documents_with_dedup(self, collection_name: str, source_file: str, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """重複チェック付きでドキュメント追加
+        
+        Args:
+            collection_name: 追加先のコレクション名
+            source_file: ソースファイルのパス
+            documents: 追加するドキュメントのリスト
+            
+        Returns:
+            dict: 処理結果
+                - status: "skipped" | "added" | "error"
+                - reason: スキップ理由（status="skipped"の場合）
+                - count: 追加されたドキュメント数（status="added"の場合）
+                - file_hash: ファイルのハッシュ値
+                - error: エラーメッセージ（status="error"の場合）
+        """
+        try:
+            # ファイルハッシュを計算
+            file_hash = self.calculate_file_hash(source_file)
+            
+            # 既に処理済みかチェック
+            if self.check_file_exists(collection_name, file_hash):
+                return {
+                    "status": "skipped",
+                    "reason": "already_exists",
+                    "file_hash": file_hash,
+                    "file_path": source_file
+                }
+            
+            # ドキュメントにfile_hashを設定
+            for doc in documents:
+                doc["file_hash"] = file_hash
+            
+            # 新規ファイルなので追加
+            success = self.add_documents(collection_name, documents)
+            
+            if success:
+                return {
+                    "status": "added",
+                    "count": len(documents),
+                    "file_hash": file_hash,
+                    "file_path": source_file
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": "Failed to add documents",
+                    "file_path": source_file
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "file_path": source_file
+            }
+    
     def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
         """コレクション情報取得"""
         try:
@@ -285,6 +342,45 @@ class VectorManager:
             return [c.name for c in collections]
         except Exception:
             return []
+    
+    def check_file_exists(self, collection_name: str, file_hash: str) -> bool:
+        """指定されたfile_hashが既にコレクションに存在するかチェック
+        
+        Args:
+            collection_name: チェック対象のコレクション名
+            file_hash: チェックするファイルのハッシュ値
+            
+        Returns:
+            bool: 既に存在する場合True、存在しない場合False
+        """
+        try:
+            client = self.get_qdrant_client()
+            
+            # コレクションが存在しない場合はFalse
+            collections = [c.name for c in client.get_collections().collections]
+            if collection_name not in collections:
+                return False
+            
+            # file_hashでフィルタリング検索
+            result = client.scroll(
+                collection_name=collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="file_hash",
+                            match=MatchValue(value=file_hash)
+                        )
+                    ]
+                ),
+                limit=1
+            )
+            
+            # ヒットがあればTrue
+            return len(result[0]) > 0
+            
+        except Exception as e:
+            # エラー時は安全側に倒してFalse（追加を許可）
+            return False
 
     def analyze_file_structure(self, file_path: str) -> Dict[str, Any]:
         """ファイル構造解析"""
@@ -465,50 +561,106 @@ class VectorManager:
 
     def vectorize_documents(self, file_structures: List[Dict[str, Any]], 
                           progress_callback=None, log_callback=None,
-                          batch_size=128, encode_batch_size=64, max_text_length=1500,
-                          collection_type="mixed") -> bool:
-        """ベクトル化処理"""
+                          batch_size=128, encode_batch_size=64, max_text_length=1500) -> bool:
+        """ベクトル化処理（分離のみ）"""
         try:
             if not self.model:
                 if log_callback:
                     log_callback("モデルを初期化しています...")
                 if not self.initialize_model(self.use_gpu):
                     return False
-            
-            if collection_type == "分離":
-                return self._process_separated_collections(
-                    file_structures, progress_callback, log_callback, 
-                    batch_size, encode_batch_size, max_text_length
-                )
-            else:
-                collection_name = "rag_documents_mixed"
-                self.create_collection(collection_name)
-                return self._process_single_collection(
-                    collection_name, file_structures, progress_callback, 
-                    log_callback, batch_size, encode_batch_size, max_text_length
-                )
+            # 常に分離方式で処理
+            return self._process_separated_collections(
+                file_structures, progress_callback, log_callback, 
+                batch_size, encode_batch_size, max_text_length
+            )
                 
         except Exception as e:
             if log_callback:
                 log_callback(f"ベクトル化エラー: {e}")
             return False
+    
+    def _identify_ast_file_type(self, file_path: str) -> str:
+        """ASTファイルのタイプを判定
+        
+        Args:
+            file_path: ファイルパス
+            
+        Returns:
+            str: "packages" | "functions" | "equations" | "unknown"
+        """
+        basename = os.path.basename(file_path).lower()
+        
+        if "ast_packages" in basename or basename == "packages.jsonl":
+            return "packages"
+        elif "ast_functions" in basename or basename == "functions.jsonl":
+            return "functions"
+        elif "ast_equations" in basename or basename == "equations.jsonl":
+            return "equations"
+        else:
+            return "unknown"
 
     def _process_separated_collections(self, file_structures, progress_callback, log_callback, 
                                      batch_size, encode_batch_size, max_text_length):
-        """分離処理"""
-        ast_files = [f for f in file_structures if f['file_path'].endswith('.jsonl')]
-        pdf_files = [f for f in file_structures if f['file_path'].endswith('.json')]
+        """分離処理（3つのASTコレクション + PDFコレクション）"""
+        # ファイルをタイプ別に分類
+        ast_packages_files = []
+        ast_functions_files = []
+        ast_equations_files = []
+        pdf_files = []
+        
+        for f in file_structures:
+            file_path = f['file_path']
+            
+            if file_path.endswith('.jsonl'):
+                # ASTファイルをタイプ別に分類
+                ast_type = self._identify_ast_file_type(file_path)
+                if ast_type == "packages":
+                    ast_packages_files.append(f)
+                elif ast_type == "functions":
+                    ast_functions_files.append(f)
+                elif ast_type == "equations":
+                    ast_equations_files.append(f)
+                else:
+                    # タイプ不明なJSONLは警告してスキップ
+                    if log_callback:
+                        log_callback(f"警告: ファイルタイプを判定できませんでした: {os.path.basename(file_path)}")
+            elif file_path.endswith('.json'):
+                pdf_files.append(f)
         
         success_count = 0
         
-        if ast_files:
+        # AST Packagesコレクション
+        if ast_packages_files:
             if log_callback:
-                log_callback(f"AST専用コレクションを処理中... ({len(ast_files)}ファイル)")
-            self.create_collection("rag_documents_ast")
-            if self._process_single_collection("rag_documents_ast", ast_files, progress_callback, 
-                                             log_callback, batch_size, encode_batch_size, max_text_length):
+                log_callback(f"AST Packages専用コレクションを処理中... ({len(ast_packages_files)}ファイル)")
+            self.create_collection("rag_documents_ast_packages")
+            if self._process_single_collection("rag_documents_ast_packages", ast_packages_files, 
+                                             progress_callback, log_callback, batch_size, 
+                                             encode_batch_size, max_text_length):
                 success_count += 1
         
+        # AST Functionsコレクション
+        if ast_functions_files:
+            if log_callback:
+                log_callback(f"AST Functions専用コレクションを処理中... ({len(ast_functions_files)}ファイル)")
+            self.create_collection("rag_documents_ast_functions")
+            if self._process_single_collection("rag_documents_ast_functions", ast_functions_files,
+                                             progress_callback, log_callback, batch_size,
+                                             encode_batch_size, max_text_length):
+                success_count += 1
+        
+        # AST Equationsコレクション
+        if ast_equations_files:
+            if log_callback:
+                log_callback(f"AST Equations専用コレクションを処理中... ({len(ast_equations_files)}ファイル)")
+            self.create_collection("rag_documents_ast_equations")
+            if self._process_single_collection("rag_documents_ast_equations", ast_equations_files,
+                                             progress_callback, log_callback, batch_size,
+                                             encode_batch_size, max_text_length):
+                success_count += 1
+        
+        # PDFコレクション
         if pdf_files:
             if log_callback:
                 log_callback(f"PDF専用コレクションを処理中... ({len(pdf_files)}ファイル)")
@@ -521,11 +673,13 @@ class VectorManager:
 
     def _process_single_collection(self, collection_name, file_structures, progress_callback, 
                                  log_callback, batch_size, encode_batch_size, max_text_length):
-        """単一コレクション処理"""
+        """単一コレクション処理（重複チェック付き）"""
         try:
             total_vectors = 0
             total_entries = sum(s.get('total_entries', 0) for s in file_structures)
             processed_entries = 0
+            skipped_files = 0
+            added_files = 0
             
             for file_idx, structure in enumerate(file_structures):
                 file_path = structure['file_path']
@@ -535,6 +689,19 @@ class VectorManager:
                 
                 if log_callback:
                     log_callback(f"処理中: {os.path.basename(file_path)} ({file_entries}エントリー)")
+                
+                # ファイル単位で重複チェック
+                if self.check_file_exists(collection_name, file_hash):
+                    skipped_files += 1
+                    processed_entries += file_entries
+                    if log_callback:
+                        log_callback(f"スキップ: {os.path.basename(file_path)} (既に処理済み)")
+                    
+                    # プログレスバー更新
+                    if progress_callback and total_entries > 0:
+                        progress_percent = int((processed_entries / total_entries) * 70) + 30
+                        progress_callback(progress_percent)
+                    continue
                 
                 extracted_texts = self.extract_texts_from_structure(file_path, text_fields)
                 
@@ -592,13 +759,16 @@ class VectorManager:
                             log_callback(f"バッチ処理エラー: {batch_error}")
                         continue
                 
-                if log_callback:
-                    log_callback(f"{os.path.basename(file_path)} 完了: {file_vectors}ベクトル")
+                if file_vectors > 0:
+                    added_files += 1
+                    if log_callback:
+                        log_callback(f"{os.path.basename(file_path)} 完了: {file_vectors}ベクトル")
             
             if log_callback:
                 log_callback(f"ベクトル化完了: 総計 {total_vectors} ベクトル")
+                log_callback(f"結果: 追加 {added_files}ファイル, スキップ {skipped_files}ファイル")
             
-            return total_vectors > 0
+            return total_vectors > 0 or skipped_files > 0
             
         except Exception as e:
             if log_callback:

@@ -32,9 +32,7 @@ class VLMExecutor(BaseAgentExecutor):
         
         # VERBOSEレベル判定
         log_name = f"vlm_{node_id_str}"
-        is_verbose = (hasattr(self.log, '_agent_levels') and 
-                     (self.log._agent_levels.get(log_name) == LogLevel.VERBOSE or
-                      self.log._agent_levels.get('vlm') == LogLevel.VERBOSE))
+        is_verbose = self.log.should_log(log_name, LogLevel.VERBOSE)
         
         # ModelManager確認
         if not self.model_manager:

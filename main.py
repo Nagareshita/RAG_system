@@ -14,6 +14,7 @@ from tabs.vectorization_tab import VectorizationTab
 from tabs.agent_design_tab import AgentDesignTab
 from tabs.user_tab import UserTab
 from tabs.pdf_parser_tab import PDFParserTab
+# 新しいModelica Analyzerタブ（ast_jsonl_validator統合版）
 try:
     from tabs.modelica_analyzer_tab import ModelicaAnalyzerTab
     MODELICA_ANALYZER_AVAILABLE = True

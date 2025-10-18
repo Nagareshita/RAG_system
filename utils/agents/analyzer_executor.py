@@ -31,11 +31,9 @@ class AnalyzerExecutor(BaseAgentExecutor):
             depth = self._get_threshold("analysis_depth")
             prompts = self._get_threshold("llm_prompts")
             
-            # VERBOSEレベル判定
+            # VERBOSEレベル判定（ノード別設定のみ反映）
             log_name = f"analyzer_{node_id_str}"
-            is_verbose = (hasattr(self.log, '_agent_levels') and 
-                         (self.log._agent_levels.get(log_name) == LogLevel.VERBOSE or
-                          self.log._agent_levels.get('analyzer') == LogLevel.VERBOSE))
+            is_verbose = self.log.should_log(log_name, LogLevel.VERBOSE)
             
             # ログ出力
             if is_verbose:

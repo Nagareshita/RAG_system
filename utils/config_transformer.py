@@ -365,7 +365,6 @@ class ConfigTransformer:
             node_levels[node_id] = log_level
         
         return {
-            "default_level": "VERBOSE",
             "node_specific_levels": node_levels
         }
     

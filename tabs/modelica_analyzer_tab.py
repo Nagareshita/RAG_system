@@ -1,799 +1,599 @@
 # tabs/modelica_analyzer_tab.py
 """
-Modelica AST解析ツールタブ（main.py統合版）
-段階的フィルタリング（raw → noise_removed → rag_optimized）とプレビュー機能を提供
+Modelica AST解析ツールタブ（ast_jsonl_validator統合版）
 """
+from __future__ import annotations
 import sys
-import os
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Tuple, Optional
+from collections import Counter
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QToolBar, QPushButton, QFileDialog, QMessageBox, QProgressBar,
-    QLabel, QSplitter, QTreeWidget, QTreeWidgetItem,
-    QGroupBox, QFormLayout, QSpinBox
+    QPushButton, QFileDialog, QLabel, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QTabWidget, QPlainTextEdit, QMessageBox, QProgressBar, QDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont, QAction, QColor
+import json
 
-# 新システムのインポート
-from tabs.modelica_modules.modelica.ast_extractor import extract_symbols_from_file, extract_dir
-from tabs.modelica_modules.modelica.content_filter import ContentFilter, FilterRuleManager
-from tabs.modelica_modules.modelica.jsonl_exporter import JSONLExporter
-from tabs.modelica_modules.ui.components import apply_dark_style
-from tabs.modelica_modules.ui.tree_builder import TreeBuilder
-from tabs.modelica_modules.ui.detail_tabs import DetailTabsWidget
-
-
-class ExtractionWorker(QThread):
-    """抽出処理ワーカー（新システム対応）"""
-    
-    progress_updated = Signal(str, int, int)
-    extraction_completed = Signal(list)
-    error_occurred = Signal(str)
-    
-    def __init__(self, path: Path, is_directory: bool = False):
-        super().__init__()
-        self.path = path
-        self.is_directory = is_directory
-        self._stop_requested = False
-    
-    def run(self):
-        """抽出実行"""
-        try:
-            self.progress_updated.emit("抽出開始...", 0, 100)
-            
-            if self.is_directory:
-                self.progress_updated.emit("ディレクトリスキャン中...", 10, 100)
-                # extract_dir に進捗コールバックを渡す（ast_extractor.py を修正する必要あり）
-                records = extract_dir(self.path, progress_callback=self._update_progress)
-            else:
-                self.progress_updated.emit("ファイル解析中...", 50, 100)
-                records = extract_symbols_from_file(str(self.path))
-            
-            if self._stop_requested:
-                return
-            
-            # SymbolRecordを辞書形式に変換
-            dict_records = []
-            for record in records:
-                if hasattr(record, 'to_dict'):
-                    dict_records.append(record.to_dict())
-                else:
-                    # 既に辞書の場合
-                    dict_records.append(record)
-            
-            self.progress_updated.emit("抽出完了", 100, 100)
-            self.extraction_completed.emit(dict_records)
-            
-        except Exception as e:
-            self.error_occurred.emit(f"抽出エラー: {str(e)}")
-    
-    def stop(self):
-        """停止要求"""
-        self._stop_requested = True
-
-    def _update_progress(self, message: str, value: int):
-        """進捗更新コールバック"""
-        self.progress_updated.emit(message, value, 100)
-
-class ProgressDialog(QWidget):
-    """プログレス表示用ダイアログ"""
-    
-    def __init__(self, title: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint)
-        self.setFixedSize(400, 120)
-        self._setup_ui()
-        
-        # 親ウィンドウの中央に配置
-        if parent:
-            parent_geo = parent.geometry()
-            x = parent_geo.x() + (parent_geo.width() - self.width()) // 2
-            y = parent_geo.y() + (parent_geo.height() - self.height()) // 2
-            self.move(x, y)
-    
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        self.message_label = QLabel("処理中...")
-        self.message_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.message_label)
-        
-        self.progress_bar = QProgressBar()
-        layout.addWidget(self.progress_bar)
-        
-        self.detail_label = QLabel("")
-        self.detail_label.setAlignment(Qt.AlignCenter)
-        self.detail_label.setStyleSheet("color: #666; font-size: 11px;")
-        layout.addWidget(self.detail_label)
-    
-    def update_progress(self, message: str, value: int = 0, maximum: int = 0, detail: str = ""):
-        """プログレス更新"""
-        from PySide6.QtWidgets import QApplication
-        self.message_label.setText(message)
-        if maximum > 0:
-            self.progress_bar.setMaximum(maximum)
-            self.progress_bar.setValue(value)
-        else:
-            self.progress_bar.setMaximum(0)  # 不定期間
-        self.detail_label.setText(detail)
-        QApplication.processEvents()
+# ast_validator モジュールからインポート
+from tabs.ast_validator.modelica_raw_extractor import (
+    extract_symbols_from_file,
+    extract_dir,
+)
+from tabs.ast_validator.validator import JSONLQualityValidator, SchemaValidator
+from tabs.ast_validator.record_builder import RepoContext, make_jsonl_entry
+from tabs.ast_validator.split_exporter import write_split_outputs, build_split_outputs
 
 
 class ModelicaAnalyzerTab(QWidget):
-    """Modelica AST解析ツールタブ（main.py統合版）"""
+    """Modelica AST解析ツールタブ"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # データ管理
-        self.raw_records: List[Dict[str, Any]] = []
-        self.filtered_records: List[Dict[str, Any]] = []
-        self.extraction_worker: Optional[ExtractionWorker] = None
-        
-        # コンポーネント初期化
-        self.content_filter = ContentFilter()
-        self.filter_manager = FilterRuleManager()
-        
+        self.records: List[Dict[str, Any]] = []
+        self.repo_context = RepoContext()
+        schema_path = Path(__file__).resolve().parent / "ast_validator" / "AST_schema.json"
+        self.schema_validator = SchemaValidator(schema_path)
+
         self._setup_ui()
-        self._setup_toolbar()
-        
-    print("Modelica AST解析タブ初期化完了（新システム）")
-    
-    def _set_tree_styles(self) -> None:
-        """ツリーのスタイル設定"""
-        self.tree_widget.setStyleSheet("""
-            QTreeWidget {
-                background-color: white;
-                color: black;
-                border: 1px solid #ccc;
-            }
-            QTreeWidget::item {
-                color: black;
-                padding: 2px;
-            }
-            QTreeWidget::item:selected {
-                background-color: #e0e0e0;
-            }
-        """)
-    
+
+        # worker/進捗用ハンドル
+        self._worker: Optional[QThread] = None
+        self._progress_dialog: Optional[QWidget] = None
+
+    # ---- 進捗UI ----
+    class _Progress(QDialog):
+        def __init__(self, title: str, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle(title)
+            self.setWindowFlag(Qt.WindowStaysOnTopHint)
+            self.setModal(True)
+            self.setFixedSize(450, 120)
+            lay = QVBoxLayout(self)
+            
+            self.label = QLabel("処理中...")
+            lay.addWidget(self.label)
+            
+            self.progress_bar = QProgressBar()
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            lay.addWidget(self.progress_bar)
+            
+            self.detail_label = QLabel("")
+            self.detail_label.setStyleSheet("color: gray; font-size: 9pt;")
+            lay.addWidget(self.detail_label)
+
+        def update(self, message: str, value: int, maximum: int = 100):
+            self.label.setText(message)
+            pct = int((value / maximum) * 100) if maximum else 0
+            self.progress_bar.setValue(pct)
+            self.detail_label.setText(f"{value} / {maximum}")
+
+    class _ExtractWorker(QThread):
+        progress = Signal(str, int, int)  # message, current, total
+        done = Signal(list)
+        error = Signal(str)
+
+        def __init__(self, path: Path, is_dir: bool):
+            super().__init__()
+            self.path = path
+            self.is_dir = is_dir
+
+        def _on_progress(self, message: str, current: int, total: int):
+            self.progress.emit(message, current, total)
+
+        def run(self):
+            try:
+                if self.is_dir:
+                    recs = extract_dir(self.path, progress_callback=self._on_progress)
+                else:
+                    recs = extract_symbols_from_file(str(self.path))
+                dicts = [r.to_dict() if hasattr(r, 'to_dict') else r for r in recs]
+                self.done.emit(dicts)
+            except Exception as e:
+                self.error.emit(str(e))
+
     def _setup_ui(self):
-        """UIセットアップ（2分割レイアウト + 閾値選定機能）"""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
 
-        # デフォルトフォントを他タブと揃える（軽微な調整）
-        default_font = QFont()
-        default_font.setPointSize(10)
-        self.setFont(default_font)
+        # Toolbar
+        bar = QHBoxLayout()
+        self.btn_open_file = QPushButton("ファイル読込")
+        self.btn_open_dir = QPushButton("ディレクトリ読込")
+        self.btn_validate_raw = QPushButton("分割前検証")
+        self.btn_validate_split = QPushButton("分割後検証")
+        self.btn_export = QPushButton("JSONL出力")
+        self.btn_validate_jsonl = QPushButton("JSONL検証")
+        bar.addWidget(self.btn_open_file)
+        bar.addWidget(self.btn_open_dir)
+        bar.addStretch()
+        bar.addWidget(self.btn_validate_raw)
+        bar.addWidget(self.btn_validate_split)
+        bar.addWidget(self.btn_export)
+        bar.addWidget(self.btn_validate_jsonl)
+        root.addLayout(bar)
 
-    # ツールバーエリア（他タブに合わせて高さを揃える）
-        self.toolbar_container = QWidget()
-        self.toolbar_container.setFixedHeight(42)
-        toolbar_layout = QHBoxLayout(self.toolbar_container)
-        toolbar_layout.setContentsMargins(6, 6, 6, 6)
-        toolbar_layout.setSpacing(8)
-        main_layout.addWidget(self.toolbar_container)
+        # Main splitter with hierarchy tree and detail tabs
+        splitter = QSplitter(Qt.Horizontal)
+        root.addWidget(splitter)
 
-        # コンテンツエリア（左右スプリッター）
-        content_splitter = QSplitter(Qt.Orientation.Horizontal)
-        content_splitter.setHandleWidth(8)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["ライブラリ構造"])
+        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
+        splitter.addWidget(self.tree)
 
-        # 左側：ツリー表示 + 閾値選定
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
+        self.detail_tabs = QTabWidget()
+        splitter.addWidget(self.detail_tabs)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
 
-        # ツリーヘッダー（ツリー部分は絵文字を残す）
-        tree_header = QLabel("ライブラリ構造")
-        tree_header.setFont(QFont("", 12, QFont.Weight.Bold))
-        left_layout.addWidget(tree_header)
+        self.preview_view = QPlainTextEdit()
+        self.preview_view.setReadOnly(True)
+        self.detail_tabs.addTab(self.preview_view, "JSONLプレビュー")
 
-        # 閾値選定UI
-        threshold_group = QGroupBox("JSONL品質選定")
-        threshold_layout = QFormLayout()
-        threshold_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        threshold_layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.detail_view = QPlainTextEdit()
+        self.detail_view.setReadOnly(True)
+        self.detail_tabs.addTab(self.detail_view, "構造サマリ")
 
-        self.content_length_threshold = QSpinBox()
-        self.content_length_threshold.setRange(100, 10000)
-        self.content_length_threshold.setValue(5000)
-        self.content_length_threshold.setSuffix(" 文字")
-        threshold_layout.addRow("コンテンツ長閾値:", self.content_length_threshold)
+        self.validation_view = QPlainTextEdit()
+        self.validation_view.setReadOnly(True)
+        self.detail_tabs.addTab(self.validation_view, "検証結果")
 
-        # 選定実行ボタン（絵文字を削除）
-        threshold_buttons = QHBoxLayout()
-        self.apply_threshold_btn = QPushButton("選定実行")
-        self.apply_threshold_btn.clicked.connect(self._apply_threshold_selection)
-        self.clear_selection_btn = QPushButton("選定解除")
-        self.clear_selection_btn.clicked.connect(self._clear_threshold_selection)
-        threshold_buttons.addWidget(self.apply_threshold_btn)
-        threshold_buttons.addWidget(self.clear_selection_btn)
-        threshold_layout.addRow(threshold_buttons)
+        # Connections
+        self.btn_open_file.clicked.connect(self._load_file)
+        self.btn_open_dir.clicked.connect(self._load_dir)
+        self.btn_validate_raw.clicked.connect(self._run_validation_raw)
+        self.btn_validate_split.clicked.connect(self._run_validation_split)
+        self.btn_export.clicked.connect(self._export_jsonl)
+        self.tree.itemSelectionChanged.connect(self._on_tree_selection)
+        self.btn_validate_jsonl.clicked.connect(self._validate_jsonl_file)
 
-        # 選定結果表示
-        self.selection_status = QLabel("選定未実行")
-        self.selection_status.setStyleSheet("color: #888; font-style: italic;")
-        threshold_layout.addRow("選定状況:", self.selection_status)
+    # Actions
+    def _load_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Modelicaファイル選択", "", "Modelica (*.mo);;All files (*)")
+        if not file_path:
+            return
+        try:
+            self._start_extraction(Path(file_path), is_dir=False)
+        except Exception as e:
+            QMessageBox.critical(self, "抽出エラー", str(e))
 
-        threshold_group.setLayout(threshold_layout)
-        left_layout.addWidget(threshold_group)
+    def _load_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Modelicaディレクトリ選択")
+        if not dir_path:
+            return
+        try:
+            self._start_extraction(Path(dir_path), is_dir=True)
+        except Exception as e:
+            QMessageBox.critical(self, "抽出エラー", str(e))
 
-        # 見た目調整：ボタン最小サイズを他タブに合わせる
-        self.apply_threshold_btn.setMinimumWidth(110)
-        self.clear_selection_btn.setMinimumWidth(110)
+    def _start_extraction(self, path: Path, is_dir: bool):
+        if self._worker and self._worker.isRunning():
+            QMessageBox.information(self, "情報", "抽出処理が実行中です")
+            return
+        # 進捗ダイアログ
+        self._progress_dialog = self._Progress("データ抽出中", self)
+        self._progress_dialog.show()
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
 
-        # ツリーウィジェット
-        self.tree_widget = QTreeWidget()
-        self.tree_widget.setHeaderLabels(["名前", "種類"])
-        self.tree_widget.itemClicked.connect(self._on_tree_item_clicked)
-        
-        # 名前列の幅を広げる（デフォルトより広く）
-        self.tree_widget.setColumnWidth(0, 180)  # 名前列を180pxに設定
-        
-        left_layout.addWidget(self.tree_widget)
+        self._worker = self._ExtractWorker(path, is_dir)
+        self._worker.progress.connect(self._on_extract_progress)
+        self._worker.done.connect(self._on_extract_done)
+        self._worker.error.connect(self._on_extract_error)
+        self._worker.start()
 
-        self._set_tree_styles()
+    def _on_extract_progress(self, message: str, current: int, total: int):
+        if self._progress_dialog:
+            try:
+                self._progress_dialog.update(message, current, total)
+            except Exception:
+                pass
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
 
-        # ツリービルダー
-        self.tree_builder = TreeBuilder(self.tree_widget)
+    def _on_extract_done(self, records: List[Dict[str, Any]]):
+        try:
+            self._set_records(records)
+        finally:
+            self._finish_progress()
 
-        # 右側：詳細表示（段階的タブ）
-        self.detail_tabs = DetailTabsWidget()
+    def _on_extract_error(self, err: str):
+        try:
+            QMessageBox.critical(self, "抽出エラー", err)
+        finally:
+            self._finish_progress()
 
-        # スプリッター配置
-        content_splitter.addWidget(left_widget)
-        content_splitter.addWidget(self.detail_tabs)
-        content_splitter.setSizes([300, 900])
-        content_splitter.setStretchFactor(0, 1)
-        content_splitter.setStretchFactor(1, 4)
+    def _finish_progress(self):
+        if self._worker:
+            self._worker.quit()
+            self._worker.wait(200)
+            self._worker = None
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
 
-        # ステータスラベル（下段をドラッグ可能にするために縦スプリッターに配置）
-        self.status_label = QLabel("準備完了 - 新システム")
-        self.status_label.setStyleSheet("color: #888; font-style: italic; padding: 4px; background: white;")
-        self.status_label.setMinimumHeight(20)
-        self.status_label.setMaximumHeight(100)
+    def _set_records(self, records: List[Dict[str, Any]]):
+        self.records = records
+        self._build_tree()
+        self.validation_view.setPlainText("")
+        self.preview_view.setPlainText("")
+        self.detail_view.setPlainText("")
 
-        # 縦スプリッター（content_splitter と status_label を上下に配置）
-        vertical_splitter = QSplitter(Qt.Orientation.Vertical)
-        vertical_splitter.addWidget(content_splitter)
-        vertical_splitter.addWidget(self.status_label)
-        vertical_splitter.setSizes([800, 30])  # 上を広く、下を狭く
-        vertical_splitter.setHandleWidth(6)
-        
-        main_layout.addWidget(vertical_splitter)
+    def _build_tree(self):
+        self.tree.clear()
+        path_items: Dict[Tuple[str, ...], QTreeWidgetItem] = {}
 
-        # 選定データ管理
-        self.selected_records = []
-        self.threshold_applied = False
-    
-    def _setup_toolbar(self):
-        """ツールバーセットアップ（ディレクトリ選択のみ + プログレスバー）"""
-        toolbar_layout = self.toolbar_container.layout()
+        for idx, rec in enumerate(self.records):
+            package = tuple(rec.get("package_path", []))
+            parent_item = None
+            current_path: Tuple[str, ...] = ()
+            for part in package:
+                current_path = current_path + (part,)
+                if current_path not in path_items:
+                    item = QTreeWidgetItem([part])
+                    item.setData(0, Qt.UserRole, {"type": "package", "path": current_path})
+                    if parent_item is None:
+                        self.tree.addTopLevelItem(item)
+                    else:
+                        parent_item.addChild(item)
+                    item.setExpanded(True)
+                    path_items[current_path] = item
+                parent_item = path_items[current_path]
 
-        # ディレクトリ選択
-        open_dir_btn = QPushButton("ディレクトリ選択")
-        open_dir_btn.clicked.connect(self._open_directory)
-        toolbar_layout.addWidget(open_dir_btn)
+            label = f"{rec.get('kind', '?')}: {rec.get('name', rec.get('fqn', 'unknown'))}"
+            symbol_item = QTreeWidgetItem([label])
+            symbol_item.setData(0, Qt.UserRole, {"type": "symbol", "index": idx})
+            parent = path_items.get(package)
+            if parent is None:
+                self.tree.addTopLevelItem(symbol_item)
+            else:
+                parent.addChild(symbol_item)
 
-        toolbar_layout.addStretch()
+        self.tree.expandToDepth(1)
+        first_symbol = self._find_first_symbol_item()
+        if first_symbol:
+            self.tree.setCurrentItem(first_symbol)
 
-        # プログレスバー
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setMinimumWidth(200)
-        self.progress_bar.setMaximumHeight(20)
-        toolbar_layout.addWidget(self.progress_bar)
+    def _find_first_symbol_item(self) -> Optional[QTreeWidgetItem]:
+        def visit(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+            data = item.data(0, Qt.UserRole)
+            if isinstance(data, dict) and data.get("type") == "symbol":
+                return item
+            for i in range(item.childCount()):
+                found = visit(item.child(i))
+                if found:
+                    return found
+            return None
 
-        # 停止ボタン
-        self.stop_btn = QPushButton("停止")
-        self.stop_btn.clicked.connect(self._stop_extraction)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.setMaximumWidth(60)
-        toolbar_layout.addWidget(self.stop_btn)
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            found = visit(item)
+            if found:
+                return found
+        return None
 
-        # 選定JSONL出力
-        export_selected_btn = QPushButton("選定JSONL出力")
-        export_selected_btn.clicked.connect(self._export_selected_jsonl)
-        toolbar_layout.addWidget(export_selected_btn)
+    def _on_tree_selection(self):
+        items = self.tree.selectedItems()
+        if not items:
+            return
 
-        # 全データJSONL出力
-        export_all_btn = QPushButton("JSONL出力")
-        export_all_btn.clicked.connect(self._export_all_jsonl)
-        toolbar_layout.addWidget(export_all_btn)
+        data = items[0].data(0, Qt.UserRole) or {}
+        node_type = data.get("type")
 
-        # 統計表示
-        stats_btn = QPushButton("統計")
-        stats_btn.clicked.connect(self._show_statistics)
-        toolbar_layout.addWidget(stats_btn)
-    
-    def _open_directory(self):
-        """ディレクトリ選択"""
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "Modelicaディレクトリを選択"
-        )
-        
-        if dir_path:
-            self._start_extraction(Path(dir_path), True)
-    
-    def _start_extraction(self, path: Path, is_directory: bool):
-        """抽出開始（プログレスダイアログ表示）"""
-        if self.extraction_worker and self.extraction_worker.isRunning():
-            QMessageBox.warning(self, "警告", "既に抽出処理が実行中です")
+        if node_type == "symbol":
+            idx = data.get("index")
+            if idx is None or idx >= len(self.records):
+                return
+            rec = self.records[idx]
+            entry = make_jsonl_entry(rec, self.repo_context)
+            self.preview_view.setPlainText(json.dumps(entry, ensure_ascii=False, indent=2))
+            self.detail_view.setPlainText(self._build_symbol_summary(rec))
+            self.detail_tabs.setCurrentWidget(self.preview_view)
+        elif node_type == "package":
+            path = tuple(data.get("path", ()))
+            self.preview_view.setPlainText("")
+            self.detail_view.setPlainText(self._build_package_summary(path))
+            self.detail_tabs.setCurrentWidget(self.detail_view)
+        else:
+            self.preview_view.setPlainText("")
+            self.detail_view.setPlainText("")
+
+    def _build_symbol_summary(self, rec: Dict[str, Any]) -> str:
+        lines: List[str] = []
+        pkg = ".".join(rec.get("package_path", [])) or "<root>"
+        lines.append(f"FQN: {rec.get('fqn', '')}")
+        lines.append(f"種別: {rec.get('kind', '')}")
+        lines.append(f"パッケージ: {pkg}")
+        lines.append(f"extends: {', '.join(rec.get('extends', [])) or '-'}")
+        lines.append(f"imports: {', '.join(rec.get('imports', [])) or '-'}")
+
+        parameters = rec.get("parameters", [])
+        components = rec.get("components", [])
+        equations = rec.get("equations", [])
+
+        lines.append("")
+        lines.append(f"パラメータ ({len(parameters)}):")
+        for param in parameters[:10]:
+            p_name = param.get("name")
+            p_type = param.get("type")
+            default = param.get("default")
+            lines.append(f"  - {p_name} : {p_type or '?'}{f' = {default}' if default else ''}")
+        if len(parameters) > 10:
+            lines.append(f"  ... 他 {len(parameters) - 10} 件")
+
+        lines.append("")
+        lines.append(f"コンポーネント ({len(components)}):")
+        for comp in components[:10]:
+            c_name = comp.get("name")
+            c_type = comp.get("type_name") or comp.get("type") or "?"
+            prefixes = comp.get("prefixes") or []
+            prefix_str = f" [{' '.join(prefixes)}]" if prefixes else ""
+            lines.append(f"  - {c_name}: {c_type}{prefix_str}")
+        if len(components) > 10:
+            lines.append(f"  ... 他 {len(components) - 10} 件")
+
+        eq_count = sum(len(block.get("equations", [])) for block in equations)
+        lines.append("")
+        lines.append(f"方程式ブロック: {len(equations)} （式合計 {eq_count}）")
+
+        doc = rec.get("docstring") or ""
+        if doc:
+            lines.append("")
+            lines.append("ドキュメント抜粋:")
+            snippet = doc.strip()
+            if len(snippet) > 600:
+                snippet = snippet[:600] + "..."
+            lines.append(snippet)
+
+        return "\n".join(lines)
+
+    def _build_package_summary(self, path: Tuple[str, ...]) -> str:
+        prefix_len = len(path)
+        subset = [
+            rec for rec in self.records
+            if tuple(rec.get("package_path", []))[:prefix_len] == path
+        ]
+
+        name = ".".join(path) if path else "<root>"
+        lines: List[str] = []
+        lines.append(f"パッケージ: {name}")
+        lines.append(f"記号数: {len(subset)}")
+
+        kind_counts = Counter(rec.get("kind", "unknown") for rec in subset)
+        if kind_counts:
+            lines.append("種別内訳:")
+            for kind, count in kind_counts.most_common():
+                lines.append(f"  - {kind}: {count}")
+
+        if subset:
+            next_level = Counter()
+            for rec in subset:
+                pkg = rec.get("package_path", [])
+                if len(pkg) > prefix_len:
+                    next_level[pkg[prefix_len]] += 1
+            if next_level:
+                lines.append("サブパッケージ:")
+                for child, count in next_level.most_common():
+                    lines.append(f"  - {child}: {count}")
+
+        lines.append("")
+        lines.append("代表的な記号:")
+        for rec in subset[:10]:
+            lines.append(f"  - {rec.get('kind', '?')}: {rec.get('name', rec.get('fqn', 'unknown'))}")
+        if len(subset) > 10:
+            lines.append(f"  ... 他 {len(subset) - 10} 件")
+
+        return "\n".join(lines)
+
+    def _run_validation_raw(self):
+        """分割前の生データを検証"""
+        if not self.records:
+            QMessageBox.information(self, "情報", "検証するデータがありません")
             return
         
-        # プログレスダイアログを表示
-        self.progress_dialog = ProgressDialog("データ読み込み中", self)
-        self.progress_dialog.show()
-        self.progress_dialog.update_progress(f"読み込み開始: {path.name}")
+        validator = JSONLQualityValidator()
+        issues, stats = validator.validate(self.records)
         
-        self.status_label.setText(f"読み込み中: {path.name}")
-        self.stop_btn.setEnabled(True)
+        lines: List[str] = []
+        lines.append("===== 分割前データの検証 =====")
+        lines.append(f"総レコード数: {stats['total']}")
+        lines.append(f"最大推定長: {stats['max_estimated_len']}")
+        lines.append(f"警告閾超: {stats['over_warn']} / 上限超: {stats['over_max']}")
+        lines.append(f"ID重複: {stats['dupe_ids']} / 内容重複: {stats['dupe_signatures']}")
+        lines.append("\n種別内訳:")
+        for k, v in sorted(stats["kinds"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {k}: {v}")
         
-        # ワーカー開始
-        self.extraction_worker = ExtractionWorker(path, is_directory)
-        self.extraction_worker.progress_updated.connect(self._on_progress_updated)
-        self.extraction_worker.extraction_completed.connect(self._on_extraction_completed)
-        self.extraction_worker.error_occurred.connect(self._on_extraction_error)
-        self.extraction_worker.start()
+        if issues:
+            lines.append("\n検出問題:")
+            for iss in issues[:500]:
+                lines.append(f"- [{iss.level}] {iss.code}: {iss.message} {('('+iss.target_id+')') if iss.target_id else ''}")
+            if len(issues) > 500:
+                lines.append(f"... 他 {len(issues)-500} 件")
+        else:
+            lines.append("\n問題は見つかりませんでした。")
+        
+        self.validation_view.setPlainText("\n".join(lines))
+        self.detail_tabs.setCurrentWidget(self.validation_view)
     
-    def _stop_extraction(self):
-        """抽出停止"""
-        if self.extraction_worker:
-            self.extraction_worker.stop()
-            self.extraction_worker.wait(3000)
-        
-        self._reset_progress()
-        self.status_label.setText("抽出を停止しました")
-    
-    def _on_progress_updated(self, message: str, value: int, maximum: int):
-        """進捗更新（プログレスダイアログ対応）"""
-        self.status_label.setText(message)
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            detail = f"({value}/{maximum})" if maximum > 0 else ""
-            self.progress_dialog.update_progress(message, value, maximum, detail)
-    
-    def _on_extraction_completed(self, records: List[Dict[str, Any]]):
-        """抽出完了（プログレスダイアログ終了）"""
-        self.raw_records = records
-        
-        # プログレスダイアログを閉じる
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
-        
-        self._reset_progress()
-        self.status_label.setText(f"抽出完了: {len(records)} 件のレコード")
-        
-        # フィルタ適用とツリー構築
-        self._apply_current_filter()
-        
-        print(f"抽出完了: {len(records)} 件")
-    
-    def _on_extraction_error(self, error_message: str):
-        """抽出エラー（プログレスダイアログ終了）"""
-        # プログレスダイアログを閉じる
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
-        
-        self._reset_progress()
-        self.status_label.setText("抽出エラー")
-        QMessageBox.critical(self, "抽出エラー", error_message)
-    
-    def _reset_progress(self):
-        """進捗リセット"""
-        self.progress_bar.setVisible(False)
-        self.stop_btn.setEnabled(False)
-    
-    def _apply_current_filter(self):
-        """現在のフィルタ設定を適用"""
-        if not self.raw_records:
+    def _run_validation_split(self):
+        """分割後のデータを検証（実際に保存される形式）"""
+        if not self.records:
+            QMessageBox.information(self, "情報", "検証するデータがありません")
             return
         
         try:
-            # 簡略化：noise_removedステージで固定フィルタ適用
-            self.filtered_records = []
-            for record in self.raw_records:
-                filtered_record = self.content_filter.filter_record(record, "noise_removed")
-                self.filtered_records.append(filtered_record)
-            
-            # ツリー更新
-            self.tree_builder.build_tree_from_records(self.filtered_records)
-            
-            # 統計更新
-            self.status_label.setText(f"フィルタ適用完了: {len(self.filtered_records)} 件")
-            
-            # 選定状態をリセット
-            self._clear_threshold_selection()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "フィルタエラー", f"フィルタ適用に失敗しました:\n{str(e)}")
-    
-    def _apply_threshold_selection(self):
-        """閾値に基づいてレコードを選定してツリーを視覚化"""
-        if not self.filtered_records:
-            QMessageBox.warning(self, "警告", "選定するデータがありません")
-            return
-        
-        print(f"🎯 DEBUG: 閾値選定開始 - 対象レコード数: {len(self.filtered_records)}")
-        
-        content_threshold = self.content_length_threshold.value()
-        print(f"🎯 DEBUG: 設定閾値: {content_threshold}文字")
-        
-        # プログレスダイアログ表示
-        progress_dialog = ProgressDialog("品質選定中", self)
-        progress_dialog.show()
-        
-        self.selected_records = []
-        self.excluded_records = []  # 閾値以上のレコード
-        selected_count = 0
-        
-        # threshold_appliedフラグを先に設定
-        self.threshold_applied = True
-        print(f"🎯 DEBUG: threshold_applied = {self.threshold_applied}")
-        
-        for i, record in enumerate(self.filtered_records):
-            progress_dialog.update_progress(
-                "閾値適用中...", i + 1, len(self.filtered_records), 
-                f"{record.get('name', '?')}"
+            # メモリ上で分割処理を実行
+            packages, functions, equations, split_stats = build_split_outputs(
+                self.records, self.repo_context
             )
             
-            is_selected = self._evaluate_record_quality(record, content_threshold)
-            record_name = record.get('name', '?')
+            # 分割後の各カテゴリを検証
+            lines: List[str] = []
+            lines.append("===== 分割後データの検証 =====")
+            lines.append(f"パッケージレコード: {len(packages)}")
+            lines.append(f"関数レコード: {len(functions)}")
+            lines.append(f"方程式レコード: {len(equations)}")
+            lines.append(f"総レコード数: {len(packages) + len(functions) + len(equations)}")
             
-            if is_selected:
-                self.selected_records.append(record)
-                selected_count += 1
-                print(f"✅ DEBUG: 選定 - {record_name}")
+            # ID重複チェック
+            all_ids = [r.get('id') for r in packages + functions + equations]
+            id_counts = Counter(all_ids)
+            duplicate_ids = {k: v for k, v in id_counts.items() if v > 1}
+            lines.append(f"\nID重複: {len(duplicate_ids)}")
+            if duplicate_ids:
+                lines.append("重複ID一覧:")
+                for dup_id, count in list(duplicate_ids.items())[:10]:
+                    lines.append(f"  - {dup_id}: {count}回")
+                if len(duplicate_ids) > 10:
+                    lines.append(f"  ... 他 {len(duplicate_ids)-10} 件")
+            
+            # 各カテゴリのサイズ統計
+            lines.append("\n===== パッケージレコードのサイズ統計 =====")
+            pkg_sizes = [len(r.get('code_text', '')) for r in packages]
+            if pkg_sizes:
+                lines.append(f"最小: {min(pkg_sizes)} / 最大: {max(pkg_sizes)} / 平均: {sum(pkg_sizes)//len(pkg_sizes)}")
+                over_limit = sum(1 for s in pkg_sizes if s > 10000)
+                lines.append(f"10KB超過: {over_limit} 件")
+            
+            lines.append("\n===== 関数レコードのサイズ統計 =====")
+            func_sizes = [len(r.get('code_text', '')) for r in functions]
+            if func_sizes:
+                lines.append(f"最小: {min(func_sizes)} / 最大: {max(func_sizes)} / 平均: {sum(func_sizes)//len(func_sizes)}")
+                over_limit = sum(1 for s in func_sizes if s > 10000)
+                lines.append(f"10KB超過: {over_limit} 件")
+            
+            lines.append("\n===== 方程式レコードのサイズ統計 =====")
+            eq_sizes = [len(str(r.get('equation', ''))) for r in equations]
+            if eq_sizes:
+                lines.append(f"最小: {min(eq_sizes)} / 最大: {max(eq_sizes)} / 平均: {sum(eq_sizes)//len(eq_sizes)}")
+            
+            # 分割統計
+            lines.append("\n===== 分割統計 =====")
+            split_packages = [r for r in packages if r.get('meta', {}).get('split_policy', {}).get('strategy') != 'none']
+            split_functions = [r for r in functions if r.get('meta', {}).get('split_policy', {}).get('strategy') != 'none']
+            lines.append(f"分割されたパッケージ: {len(split_packages)}")
+            lines.append(f"分割された関数: {len(split_functions)}")
+            
+            if duplicate_ids:
+                lines.append("\n⚠️ 警告: ID重複が検出されました！")
             else:
-                self.excluded_records.append(record)
-                print(f"❌ DEBUG: 除外 - {record_name}")
-        
-        progress_dialog.close()
-        
-        print(f"🎯 DEBUG: 選定結果 - 選定: {len(self.selected_records)}, 除外: {len(self.excluded_records)}")
-        
-        # ツリーの視覚化更新
-        print(f"🌳 DEBUG: ツリー更新開始")
-        self._update_tree_based_on_selection()
-        
-        # ステータス更新
-        excluded_count = len(self.excluded_records)
-        self.selection_status.setText(f"選定済み: {selected_count}件 / 除外: {excluded_count}件")
-        self.selection_status.setStyleSheet("color: #4a9eff; font-weight: bold;")
-        
-        self.status_label.setText(f"選定完了: {selected_count}件（{content_threshold}文字以下）を選定")
-        
-        print(f"🎯 DEBUG: 閾値選定完了 - threshold_applied = {self.threshold_applied}")
-    
-    def _evaluate_record_quality(self, record: Dict[str, Any], content_threshold: int) -> bool:
-        """レコードの品質を評価（JSONLタブと同じ文字数で判定）"""
-        try:
-            # JSONLタブと同じ方法でJSONL文字列を生成
-            exporter = JSONLExporter()
-            jsonl_content = exporter.preview_jsonl_record(record, "noise_removed")
-            content_length = len(jsonl_content)
+                lines.append("\n✓ ID重複なし: 検証成功")
             
-            # 閾値以下（短い）のレコードを選定
-            return content_length <= content_threshold
+            self.validation_view.setPlainText("\n".join(lines))
+            self.detail_tabs.setCurrentWidget(self.validation_view)
             
         except Exception as e:
-            print(f"品質評価エラー: {record.get('name', '?')} - {e}")
-            return False
-    
-    def _update_tree_based_on_selection(self):
-        """選定結果に基づいてツリーの表示を更新"""
-        print(f"🌳 DEBUG: ツリー更新開始")
-        
-        if not self.selected_records and not hasattr(self, 'excluded_records'):
-            print(f"❌ DEBUG: 選定データなし")
+            QMessageBox.critical(self, "検証エラー", f"分割後検証中にエラーが発生しました:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def _export_jsonl(self):
+        if not self.records:
+            QMessageBox.information(self, "情報", "出力するデータがありません")
             return
         
-        # 選定・除外レコードのFQNセットを作成
-        selected_fqns = {record.get("fqn", record.get("name", "")) for record in self.selected_records}
-        excluded_fqns = {record.get("fqn", record.get("name", "")) for record in getattr(self, 'excluded_records', [])}
+        # デフォルトの出力先を data/ast に設定
+        default_dir = Path(__file__).resolve().parents[1] / "data" / "ast"
         
-        print(f"🌳 DEBUG: 選定FQN: {list(selected_fqns)[:5]}...")
-        print(f"🌳 DEBUG: 除外FQN: {list(excluded_fqns)[:5]}...")
+        # ディレクトリ選択ダイアログを表示
+        dir_path = QFileDialog.getExistingDirectory(
+            self, 
+            "JSONL出力先ディレクトリを選択", 
+            str(default_dir)
+        )
         
-        items_updated = 0
+        # キャンセルされた場合は処理を中止
+        if not dir_path:
+            return
         
-        def update_item_appearance(item):
-            nonlocal items_updated
-            
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            
-            if data and isinstance(data, dict):
-                # このアイテムのレコードをチェック
-                item_records = []
-                if "records" in data and data["records"]:
-                    item_records = data["records"]
-                elif "kind" in data:
-                    # 単一レコードの場合
-                    item_records = [data]
-                
-                if item_records:
-                    record = item_records[0]  # 最初のレコードで判定
-                    record_fqn = record.get("fqn", record.get("name", ""))
-                    
-                    if record_fqn in excluded_fqns:
-                        # 除外対象：グレー表示
-                        gray_color = QColor(100, 100, 100)
-                        item.setForeground(0, gray_color)
-                        item.setForeground(1, gray_color)
-                        
-                        bg_color = QColor(50, 50, 50)
-                        item.setBackground(0, bg_color)
-                        item.setBackground(1, bg_color)
-                        
-                        jsonl_content = self._get_record_jsonl_content(record)
-                        item.setToolTip(0, f"閾値以上のため除外: {len(jsonl_content)} 文字")
-                        items_updated += 1
-                        print(f"🚫 DEBUG: 除外表示適用 - {record_fqn}")
-                        
-                    elif record_fqn in selected_fqns:
-                        # 選定対象：ハイライト表示（白背景）
-                        black_color = QColor(0, 0, 0)
-                        white_bg = QColor(255, 255, 255)
-                        
-                        item.setForeground(0, black_color)
-                        item.setForeground(1, black_color)
-                        item.setBackground(0, white_bg)
-                        item.setBackground(1, white_bg)
-                        
-                        jsonl_content = self._get_record_jsonl_content(record)
-                        item.setToolTip(0, f"選定済み: {len(jsonl_content)} 文字")
-                        items_updated += 1
-                        print(f"✅ DEBUG: 選定表示適用 - {record_fqn}")
-                        
-                    else:
-                        # 該当なし：通常表示にリセット
-                        white_color = QColor(255, 255, 255)
-                        transparent_color = QColor(0, 0, 0, 0)
-                        
-                        item.setForeground(0, white_color)
-                        item.setForeground(1, white_color)
-                        item.setBackground(0, transparent_color)
-                        item.setBackground(1, transparent_color)
-                        item.setToolTip(0, "")
-                else:
-                    # レコードがないパッケージ等：通常表示
-                    white_color = QColor(255, 255, 255)
-                    transparent_color = QColor(0, 0, 0, 0)
-                    
-                    item.setForeground(0, white_color)
-                    item.setForeground(1, white_color)
-                    item.setBackground(0, transparent_color)
-                    item.setBackground(1, transparent_color)
-                    item.setToolTip(0, "")
-            
-            # 子アイテムも再帰的にチェック
-            for i in range(item.childCount()):
-                update_item_appearance(item.child(i))
+        output_dir = Path(dir_path)
         
-        # ツリーの全アイテムをチェック
-        top_level_count = self.tree_widget.topLevelItemCount()
-        print(f"🌳 DEBUG: トップレベルアイテム数: {top_level_count}")
-        
-        for i in range(top_level_count):
-            update_item_appearance(self.tree_widget.topLevelItem(i))
-        
-        print(f"🌳 DEBUG: ツリー更新完了 - {items_updated}件のアイテムを更新")
-    
-    def _get_record_jsonl_content(self, record: Dict[str, Any]) -> str:
-        """レコードのJSONL内容を取得"""
         try:
-            exporter = JSONLExporter()
-            return exporter.preview_jsonl_record(record, "noise_removed")
-        except:
-            return ""
-    
-    def _clear_threshold_selection(self):
-        """閾値選定を解除"""
-        self.selected_records = []
-        if hasattr(self, 'excluded_records'):
-            self.excluded_records = []
-        self.threshold_applied = False
-        
-        # ツリーの表示をリセット
-        self._reset_tree_appearance()
-        
-        # ステータス更新
-        self.selection_status.setText("選定解除")
-        self.selection_status.setStyleSheet("color: #888; font-style: italic;")
-        self.status_label.setText("選定解除済み")
-    
-    def _reset_tree_appearance(self):
-        """ツリーの表示をリセット"""
-        def reset_item(item):
-            white_color = QColor(255, 255, 255)
-            transparent_color = QColor(0, 0, 0, 0)
+            # 出力ディレクトリを作成（存在しない場合）
+            output_dir.mkdir(parents=True, exist_ok=True)
             
-            item.setForeground(0, white_color)
-            item.setForeground(1, white_color)
-            item.setBackground(0, transparent_color)
-            item.setBackground(1, transparent_color)
-            item.setToolTip(0, "")
-            
-            for i in range(item.childCount()):
-                reset_item(item.child(i))
-        
-        for i in range(self.tree_widget.topLevelItemCount()):
-            reset_item(self.tree_widget.topLevelItem(i))
-    
-    def _on_tree_item_clicked(self, item: QTreeWidgetItem, column: int):
-        """ツリーアイテムクリック（閾値除外判定対応）"""
-        print(f"🖱️ DEBUG: ツリーアイテムクリック - {item.text(0)}")
-        
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        print(f"🖱️ DEBUG: data type: {type(data)}")
-        
-        if data:
-            print(f"🖱️ DEBUG: data keys: {list(data.keys()) if isinstance(data, dict) else 'not dict'}")
-            
-            # 閾値適用済みで除外されているかチェック
-            is_excluded = False
-            exclusion_reason = ""
-            
-            if self.threshold_applied and hasattr(self, 'excluded_records'):
-                print(f"🖱️ DEBUG: 閾値適用済み - 除外レコード数: {len(self.excluded_records)}")
-                
-                # このアイテムのレコードが除外リストにあるかチェック
-                item_records = []
-                if isinstance(data, dict):
-                    if "records" in data and data["records"]:
-                        item_records = data["records"]
-                    else:
-                        # 単一レコードの場合
-                        item_records = [data]
-                
-                print(f"🖱️ DEBUG: チェック対象レコード数: {len(item_records)}")
-                
-                # 除外レコードのFQNセットを作成
-                excluded_fqns = {record.get("fqn", record.get("name", "")) for record in self.excluded_records}
-                print(f"🖱️ DEBUG: 除外FQN例: {list(excluded_fqns)[:3]}")
-                
-                # このアイテムのレコードが除外リストに含まれているかチェック
-                for record in item_records:
-                    record_fqn = record.get("fqn", record.get("name", ""))
-                    print(f"🖱️ DEBUG: レコードFQNチェック: {record_fqn}")
-                    if record_fqn in excluded_fqns:
-                        is_excluded = True
-                        exclusion_reason = f"コンテンツ長が{self.content_length_threshold.value()}文字を超過"
-                        print(f"🚫 DEBUG: 除外判定 - {record_fqn}")
-                        break
-            else:
-                print(f"🖱️ DEBUG: 閾値未適用")
-            
-            # 除外フラグを追加してデータを更新
-            display_data = data.copy() if isinstance(data, dict) else data
-            if isinstance(display_data, dict):
-                display_data["_ui_excluded"] = is_excluded
-                if is_excluded:
-                    display_data["_ui_exclusion_reason"] = exclusion_reason
-                    print(f"🚫 DEBUG: 除外データ設定 - {exclusion_reason}")
-            
-            print(f"📋 DEBUG: 詳細タブに送信 - _ui_excluded: {display_data.get('_ui_excluded', False) if isinstance(display_data, dict) else False}")
-            
-            # 詳細タブに表示
-            self.detail_tabs.update_content(display_data)
-        else:
-            print(f"⚠️ DEBUG: データなし")
-    
-    def _export_selected_jsonl(self):
-        """選定されたレコードのみをJSONL出力"""
-        if not self.selected_records:
-            QMessageBox.warning(self, "警告", "選定されたデータがありません\n先に「選定実行」を行ってください")
-            return
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "選定JSONL出力", "selected_modelica_data.jsonl", "JSONL Files (*.jsonl);;All Files (*)"
-        )
-        
-        if file_path:
-            try:
-                exporter = JSONLExporter()
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    for record in self.selected_records:
-                        jsonl_line = exporter.preview_jsonl_record(record, "noise_removed")
-                        f.write(jsonl_line + '\n')
-                
-                QMessageBox.information(
-                    self, "出力完了", 
-                    f"選定JSONL出力が完了しました\n"
-                    f"ファイル: {file_path}\n"
-                    f"レコード数: {len(self.selected_records)}"
-                )
-                
-            except Exception as e:
-                QMessageBox.critical(self, "出力エラー", f"選定JSONL出力に失敗しました:\n{str(e)}")
-    
-    def _export_all_jsonl(self):
-        """全データをJSONL出力（閾値選定結果を考慮）"""
-        # 出力対象データを決定
-        output_records = []
-        output_description = ""
-        
-        if self.threshold_applied and self.selected_records:
-            # 閾値選定が適用されている場合は選定レコードのみ
-            output_records = self.selected_records
-            excluded_count = len(getattr(self, 'excluded_records', []))
-            output_description = f"選定データ（{len(output_records)}件、{excluded_count}件除外済み）"
-        elif self.filtered_records:
-            # 閾値選定が未適用の場合は全フィルタ済みデータ
-            output_records = self.filtered_records
-            output_description = f"全データ（{len(output_records)}件）"
-        else:
-            QMessageBox.warning(self, "警告", "出力するデータがありません")
-            return
-        
-        print(f"📤 DEBUG: JSONL出力対象 - {output_description}")
-        print(f"📤 DEBUG: threshold_applied: {self.threshold_applied}")
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "JSONL出力", "modelica_data.jsonl", "JSONL Files (*.jsonl);;All Files (*)"
-        )
-        
-        if file_path:
-            try:
-                exporter = JSONLExporter()
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    for record in output_records:
-                        jsonl_line = exporter.preview_jsonl_record(record, "noise_removed")
-                        f.write(jsonl_line + '\n')
-                
-                success_message = f"""JSONL出力が完了しました
+            stats = write_split_outputs(self.records, self.repo_context, output_dir)
+            QMessageBox.information(
+                self,
+                "出力完了",
+                (
+                    f"出力先: {output_dir}\n"
+                    f"ast_packages.jsonl: {stats['packages']} 行\n"
+                    f"ast_functions.jsonl: {stats['functions']} 行\n"
+                    f"ast_equations.jsonl: {stats['equations']} 行\n"
+                    f"重複ID: {stats['duplicate_ids']}"
+                ),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "出力エラー", str(e))
 
-ファイル: {file_path}
-出力内容: {output_description}
-レコード数: {len(output_records)}
-
-{f'除外されたレコード: {len(getattr(self, "excluded_records", []))}件' if self.threshold_applied else ''}"""
-                
-                QMessageBox.information(self, "出力完了", success_message)
-                print(f"✅ JSONL出力完了: {len(output_records)}件")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "出力エラー", f"JSONL出力に失敗しました:\n{str(e)}")
-                print(f"❌ JSONL出力エラー: {e}")
-    
-    def _show_statistics(self):
-        """統計表示"""
-        if not self.filtered_records:
-            QMessageBox.information(self, "統計", "表示するデータがありません")
+    def _validate_jsonl_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "検証するJSONLを選択", "", "JSONL (*.jsonl);;All files (*)")
+        if not path:
             return
-        
-        # 統計計算
-        kind_counts = {}
-        total_components = 0
-        total_parameters = 0
-        total_variables = 0
-        
-        for record in self.filtered_records:
-            kind = record.get("kind", "unknown")
-            kind_counts[kind] = kind_counts.get(kind, 0) + 1
-            
-            total_components += len(record.get("components", []))
-            total_parameters += len(record.get("parameters", []))
-            total_variables += len(record.get("variables", []))
-        
-        # 統計メッセージ
-        msg_parts = [
-            f"総レコード数: {len(self.filtered_records)}",
-            f"総コンポーネント数: {total_components}",
-            f"総パラメータ数: {total_parameters}",
-            f"総変数数: {total_variables}",
-            "",
-            "種類別統計:"
-        ]
-        
-        for kind, count in sorted(kind_counts.items()):
-            msg_parts.append(f"  {kind}: {count}")
-        
-        QMessageBox.information(self, "統計情報", "\n".join(msg_parts))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw_lines = [line.rstrip("\n") for line in f if line.strip()]
+
+            parsed: List[Dict[str, Any]] = []
+            parse_errors = 0
+            parse_messages: List[str] = []
+            for idx, line in enumerate(raw_lines, start=1):
+                try:
+                    parsed.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    parse_errors += 1
+                    parse_messages.append(f"[error] PARSE_FAIL line {idx}: {exc}")
+
+            schema_issues = self.schema_validator.validate_lines(raw_lines)
+
+            ast_records: List[Dict[str, Any]] = []
+            for obj in parsed:
+                ast = (obj.get("collections") or {}).get("ast_record") if isinstance(obj, dict) else None
+                if isinstance(ast, dict):
+                    ast_records.append(ast)
+
+            code_lengths = [len(ast.get("code_text", "")) for ast in ast_records]
+            max_code = max(code_lengths) if code_lengths else 0
+            avg_code = sum(code_lengths) / len(code_lengths) if code_lengths else 0
+            kinds = Counter(ast.get("kind", "unknown") for ast in ast_records)
+            packages = Counter(".".join(ast.get("package_path", [])) for ast in ast_records)
+
+            ids = [ast.get("id") for ast in ast_records]
+            id_counts = Counter(ids)
+            dup_ids = {k: v for k, v in id_counts.items() if v > 1 and k is not None}
+
+            report_lines: List[str] = []
+            report_lines.append(f"ファイル: {Path(path).name}")
+            report_lines.append(f"総行数: {len(raw_lines)} / 有効ASTレコード: {len(ast_records)} / 解析エラー: {parse_errors}")
+            report_lines.append(f"code_text 最大長: {max_code} / 平均: {avg_code:.1f}")
+            report_lines.append("種類内訳: " + ", ".join(f"{k}:{v}" for k, v in kinds.most_common()))
+            report_lines.append("パッケージ内訳: " + ", ".join(f"{k or '<root>'}:{v}" for k, v in packages.most_common(5)))
+            report_lines.append(f"重複ID: {len(dup_ids)}")
+
+            if dup_ids:
+                sample = list(dup_ids.items())[:5]
+                report_lines.append(f"  例: {sample}")
+
+            if parse_messages:
+                report_lines.append("\n解析エラー詳細:")
+                report_lines.extend(parse_messages)
+
+            if schema_issues:
+                report_lines.append("\nスキーマ検証結果:")
+                for issue in schema_issues[:50]:
+                    report_lines.append(f"- [{issue.level}] {issue.code}: {issue.message}")
+                if len(schema_issues) > 50:
+                    report_lines.append(f"... 他 {len(schema_issues) - 50} 件")
+
+            if not parse_messages and not schema_issues and not dup_ids:
+                report_lines.append("\n問題は見つかりませんでした。")
+            self.validation_view.setPlainText("\n".join(report_lines))
+            self.detail_tabs.setCurrentWidget(self.validation_view)
+        except Exception as e:
+            QMessageBox.critical(self, "検証エラー", str(e))

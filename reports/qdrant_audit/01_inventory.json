@@ -1,0 +1,7 @@
+{
+  "_note": "このファイルは utils/vector_manager.py の audit_collections() 実行時に上書きされます。現在はテンプレートです。",
+  "rag_documents_ast_equations": {"exists": false},
+  "rag_documents_ast_functions": {"exists": false},
+  "rag_documents_ast_packages": {"exists": false},
+  "rag_documents_pdf": {"exists": false}
+}

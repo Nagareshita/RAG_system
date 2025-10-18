@@ -1,5 +1,12 @@
 model-00001-of-00002.safetensors
 model-00002-of-00002.safetensors
+llm_config.json
+data/
+vector_db/
+# Large model cache and vector database
+model_cache/
+vector_db/
+model_cache/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

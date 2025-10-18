@@ -33,11 +33,9 @@ class DomainExpertExecutor(BaseAgentExecutor):
             if not search_results or not original_query:
                 return self._create_error_result("分析データ不足", node_id)
             
-            # VERBOSEレベル判定
+            # VERBOSEレベル判定（ノード別設定のみ反映）
             log_name = f"domain_expert_{node_id_str}"
-            is_verbose = (hasattr(self.log, '_agent_levels') and 
-                         (self.log._agent_levels.get(log_name) == LogLevel.VERBOSE or
-                          self.log._agent_levels.get('domain_expert') == LogLevel.VERBOSE))
+            is_verbose = self.log.should_log(log_name, LogLevel.VERBOSE)
             
             # 専門分野設定取得
             domain = self._get_threshold_safe("expertise_domain", "一般技術")

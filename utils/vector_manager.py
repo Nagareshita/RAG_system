@@ -3,9 +3,21 @@ import os
 import json
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+from dataclasses import dataclass, asdict
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import (
+    Distance,
+    VectorParams,
+    PointStruct,
+    Filter,
+    FieldCondition,
+    MatchValue,
+    SparseVectorParams,
+    ScalarQuantizationConfig,
+    ScalarType,
+    OptimizersConfigDiff,
+)
 import uuid
 import hashlib
 import threading
@@ -100,7 +112,12 @@ class VectorManager:
     def get_qdrant_client(self) -> QdrantClient:
         """Qdrantクライアント取得"""
         if self.client is None:
-            self.client = QdrantClient(path=self.db_path)
+            # URLが指定されていればHTTP、なければローカルDB
+            url = os.environ.get("QDRANT_URL")
+            if url:
+                self.client = QdrantClient(url=url)
+            else:
+                self.client = QdrantClient(path=self.db_path)
         return self.client
     
     def force_reinitialize_models(self):
@@ -152,12 +169,23 @@ class VectorManager:
                 query_vector = query_result[0] if isinstance(query_result, list) else query_result
             
             client = self.get_qdrant_client()
-            search_result = client.search(
-                collection_name=collection_name,
-                query_vector=query_vector.tolist(),
-                limit=limit,
-                score_threshold=score_threshold
-            )
+            # named vector "text" がある場合も考慮して2段階でトライ
+            try:
+                search_result = client.search(
+                    collection_name=collection_name,
+                    query_vector=("text", query_vector.tolist()),
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                )
+            except Exception:
+                search_result = client.search(
+                    collection_name=collection_name,
+                    query_vector=query_vector.tolist(),
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                )
             
             results = []
             for hit in search_result:
@@ -178,6 +206,10 @@ class VectorManager:
             
         except Exception as e:
             return []
+
+    def simple_search(self, query: str, collection_name: str, topk: int = 10, score_threshold: float = 0.0) -> List[Dict[str, Any]]:
+        """UI用の簡易検索（denseのみ）。"""
+        return self._dense_search(query, collection_name, max(1, topk), max(0.0, score_threshold))
     
     def _rerank_results(self, query: str, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """クロスエンコーダによる結果再ランク"""
@@ -203,9 +235,89 @@ class VectorManager:
             
             results.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
             return results
-            
+
         except Exception as e:
             return results
+
+    # ===== ハイブリッド補助（疑似スパース: トークン重複） =====
+    def _tokenize(self, text: str) -> List[str]:
+        try:
+            import re
+            return [t for t in re.split(r"[^\w]+", (text or "").lower()) if t]
+        except Exception:
+            return (text or "").lower().split()
+
+    def _overlap_score(self, query: str, text: str) -> float:
+        q = set(self._tokenize(query))
+        if not q:
+            return 0.0
+        t = set(self._tokenize(text))
+        if not t:
+            return 0.0
+        inter = len(q & t)
+        union = len(q | t)
+        return inter / union if union else 0.0
+
+    def search_across_collections(
+        self,
+        query: str,
+        collections: List[str],
+        initial_k: int = 30,
+        final_k: int = 10,
+        similarity_threshold: float = 0.0,
+        use_reranker: bool = True,
+        use_hybrid: bool = False,
+        dense_weight: float = 0.7,
+        sparse_weight: float = 0.3,
+    ) -> List[Dict[str, Any]]:
+        """複数コレクション横断 + 擬似ハイブリッド + 再ランクをサポートした検索。
+
+        - Denseを各コレクションで取得→統合
+        - use_hybrid=True の場合、テキスト重複ベースの擬似スパーススコアを加算
+        - use_reranker=True の場合、統合リストをクロスエンコーダで再ランク
+        """
+        all_hits: List[Dict[str, Any]] = []
+        for col in collections:
+            dense_hits = self._dense_search(query, col, initial_k, max(0.0, similarity_threshold))
+            for h in dense_hits:
+                h = dict(h)
+                h["collection"] = col
+                all_hits.append(h)
+
+        if not all_hits:
+            return []
+
+        # Denseスコアの0-1正規化（コレクション間で尺度差がある場合に備える）
+        scores = [h.get("score", 0.0) for h in all_hits]
+        smin, smax = min(scores), max(scores)
+        def norm_dense(x: float) -> float:
+            return (x - smin) / (smax - smin) if smax > smin else 0.0
+
+        # 擬似スパーススコアの計算
+        if use_hybrid:
+            for h in all_hits:
+                txt = h.get("text") or ""
+                h["_sparse"] = self._overlap_score(query, txt)
+        else:
+            for h in all_hits:
+                h["_sparse"] = 0.0
+
+        # 合成スコア
+        for h in all_hits:
+            d = norm_dense(float(h.get("score", 0.0)))
+            sp = float(h.get("_sparse", 0.0))
+            h["mixed_score"] = dense_weight * d + sparse_weight * sp
+
+        # 合成スコアで一次ソートし、上位を再ランク対象に
+        all_hits.sort(key=lambda x: x.get("mixed_score", 0.0), reverse=True)
+        candidates = all_hits[:max(initial_k, final_k)]
+
+        if use_reranker:
+            reranked = self._rerank_results(query, candidates)
+            # 再ランク後も合成スコアを加味したい場合は再合成してもよいが、ここでは再ランク優先
+            return reranked[:final_k]
+        else:
+            return candidates[:final_k]
     
     def create_collection(self, collection_name: str, vector_size: int = 1024):
         """コレクション作成"""
@@ -217,6 +329,47 @@ class VectorManager:
             )
             return True
         except Exception as e:
+            return False
+
+    # === v2 設計向け: dense(named "text") + sparse + 量子化の新設 ===
+    def create_collection_v2(self, collection_name: str, vector_size: int = 1536) -> bool:
+        try:
+            client = self.get_qdrant_client()
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config={"text": VectorParams(size=vector_size, distance=Distance.COSINE)},
+                sparse_vectors_config=SparseVectorParams(),
+                quantization_config=ScalarQuantizationConfig(type=ScalarType.INT8, always_ram=True),
+                optimizers_config=OptimizersConfigDiff(default_segment_number=2),
+            )
+            return True
+        except Exception:
+            return False
+
+    def upsert_points_v2(self, collection_name: str, rows: List[Dict[str, Any]]) -> bool:
+        """rows: {id, embedding_dense(list), embedding_sparse(dict|None), payload(dict)}"""
+        try:
+            client = self.get_qdrant_client()
+            points: List[PointStruct] = []
+            for r in rows:
+                pid = r.get("id") or str(uuid.uuid4())
+                dense = r.get("embedding_dense")
+                sparse = r.get("embedding_sparse")
+                payload = r.get("payload", {})
+                if not isinstance(dense, (list, tuple)):
+                    continue
+                p = PointStruct(id=pid, vector={"text": list(dense)}, payload=payload)
+                # qdrant-client <1.7 の互換: sparse_vectorキーワードがある環境のみ設定
+                try:
+                    setattr(p, "sparse_vector", sparse)
+                except Exception:
+                    pass
+                points.append(p)
+            if not points:
+                return False
+            client.upsert(collection_name=collection_name, points=points)
+            return True
+        except Exception:
             return False
     
     def add_documents(self, collection_name: str, documents: List[Dict[str, Any]]):
@@ -263,6 +416,63 @@ class VectorManager:
         except Exception as e:
             return False
     
+    def add_documents_with_dedup(self, collection_name: str, source_file: str, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """重複チェック付きでドキュメント追加
+        
+        Args:
+            collection_name: 追加先のコレクション名
+            source_file: ソースファイルのパス
+            documents: 追加するドキュメントのリスト
+            
+        Returns:
+            dict: 処理結果
+                - status: "skipped" | "added" | "error"
+                - reason: スキップ理由（status="skipped"の場合）
+                - count: 追加されたドキュメント数（status="added"の場合）
+                - file_hash: ファイルのハッシュ値
+                - error: エラーメッセージ（status="error"の場合）
+        """
+        try:
+            # ファイルハッシュを計算
+            file_hash = self.calculate_file_hash(source_file)
+            
+            # 既に処理済みかチェック
+            if self.check_file_exists(collection_name, file_hash):
+                return {
+                    "status": "skipped",
+                    "reason": "already_exists",
+                    "file_hash": file_hash,
+                    "file_path": source_file
+                }
+            
+            # ドキュメントにfile_hashを設定
+            for doc in documents:
+                doc["file_hash"] = file_hash
+            
+            # 新規ファイルなので追加
+            success = self.add_documents(collection_name, documents)
+            
+            if success:
+                return {
+                    "status": "added",
+                    "count": len(documents),
+                    "file_hash": file_hash,
+                    "file_path": source_file
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": "Failed to add documents",
+                    "file_path": source_file
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "file_path": source_file
+            }
+    
     def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
         """コレクション情報取得"""
         try:
@@ -285,6 +495,316 @@ class VectorManager:
             return [c.name for c in collections]
         except Exception:
             return []
+    
+    def check_file_exists(self, collection_name: str, file_hash: str) -> bool:
+        """指定されたfile_hashが既にコレクションに存在するかチェック
+        
+        Args:
+            collection_name: チェック対象のコレクション名
+            file_hash: チェックするファイルのハッシュ値
+            
+        Returns:
+            bool: 既に存在する場合True、存在しない場合False
+        """
+        try:
+            client = self.get_qdrant_client()
+            
+            # コレクションが存在しない場合はFalse
+            collections = [c.name for c in client.get_collections().collections]
+            if collection_name not in collections:
+                return False
+            
+            # file_hashでフィルタリング検索
+            result = client.scroll(
+                collection_name=collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="file_hash",
+                            match=MatchValue(value=file_hash)
+                        )
+                    ]
+                ),
+                limit=1
+            )
+            
+            # ヒットがあればTrue
+            return len(result[0]) > 0
+            
+        except Exception as e:
+            # エラー時は安全側に倒してFalse（追加を許可）
+            return False
+
+    # ===== 監査系ユーティリティ =====
+    @dataclass
+    class CollectionInventory:
+        name: str
+        exists: bool
+        points_count: int = 0
+        vectors: Dict[str, Any] = None
+        sparse: Optional[Dict[str, Any]] = None
+        quantization: Optional[Dict[str, Any]] = None
+        segments: Optional[int] = None
+        sample_size: int = 0
+        payload_key_frequency: Dict[str, int] = None
+        avg_payload_chars: float = 0.0
+        max_payload_chars: int = 0
+        primary_text_key_guess: Optional[str] = None
+        missing_rates: Dict[str, float] = None
+        duplicate_keys_checked: List[str] = None
+        duplicate_counts: Dict[str, int] = None
+        examples: List[Dict[str, Any]] = None
+
+    TARGET_COLLECTIONS = [
+        "rag_documents_ast_equations",
+        "rag_documents_ast_functions",
+        "rag_documents_ast_packages",
+        "rag_documents_pdf",
+    ]
+
+    def audit_collections(self, output_dir: str = "reports/qdrant_audit", sample_size: int = 100) -> Dict[str, Any]:
+        """4コレクションの現状を調査し、ファイル出力する"""
+        inventories: Dict[str, Any] = {}
+        try:
+            client = self.get_qdrant_client()
+        except Exception as e:
+            client = None
+            print(f"Qdrant接続不可（テンプレ出力）: {e}")
+
+        for name in self.TARGET_COLLECTIONS:
+            inv = self._inspect_collection(client, name, sample_size)
+            # dataclass to dict（後方互換: inner class）
+            if isinstance(inv, dict):
+                inventories[name] = inv
+            else:
+                inventories[name] = asdict(inv)
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        with open(out / "01_inventory.json", "w", encoding="utf-8") as f:
+            json.dump(inventories, f, ensure_ascii=False, indent=2)
+        with open(out / "02_gaps.md", "w", encoding="utf-8") as f:
+            f.write(self._render_gaps_md(inventories))
+        with open(out / "03_target_schema.md", "w", encoding="utf-8") as f:
+            f.write(self._render_target_schema_md())
+        with open(out / "04_migration_plan.md", "w", encoding="utf-8") as f:
+            f.write(self._render_migration_plan_md())
+        return inventories
+
+    def _inspect_collection(self, client: Optional[QdrantClient], name: str, sample_size: int):
+        inv = VectorManager.CollectionInventory(
+            name=name,
+            exists=False,
+            vectors={},
+            sparse=None,
+            quantization=None,
+            segments=None,
+            sample_size=0,
+            payload_key_frequency={},
+            avg_payload_chars=0.0,
+            max_payload_chars=0,
+            primary_text_key_guess=None,
+            missing_rates={},
+            duplicate_keys_checked=[],
+            duplicate_counts={},
+            examples=[],
+        )
+        if client is None:
+            return inv
+        try:
+            info = client.get_collection(name)
+            inv.exists = True
+        except Exception:
+            inv.exists = False
+            return inv
+
+        try:
+            inv.points_count = getattr(info, "points_count", 0) or getattr(info, "vectors_count", 0) or 0
+        except Exception:
+            inv.points_count = 0
+        try:
+            inv.vectors = self._safe_to_dict(getattr(info, "vectors", {})) or self._safe_to_dict(getattr(info, "vectors_config", {}))
+        except Exception:
+            inv.vectors = {}
+        try:
+            inv.sparse = self._safe_to_dict(getattr(info, "sparse_vectors_config", None))
+        except Exception:
+            inv.sparse = None
+        try:
+            inv.quantization = self._safe_to_dict(getattr(info, "quantization_config", None))
+        except Exception:
+            inv.quantization = None
+        try:
+            inv.segments = getattr(info, "segments_count", None)
+        except Exception:
+            inv.segments = None
+
+        try:
+            pts, _ = client.scroll(collection_name=name, with_payload=True, with_vectors=False, limit=max(1, min(sample_size, 1000)))
+        except Exception:
+            pts = []
+        inv.sample_size = len(pts)
+        if not pts:
+            return inv
+
+        key_freq: Dict[str, int] = {}
+        string_key_lengths: Dict[str, List[int]] = {}
+        examples: List[Dict[str, Any]] = []
+        dup_keys = ["chunk_id", "fqn", "equation_id", "owner_fqn"]
+        dup_counters: Dict[str, Dict[Any, int]] = {k: {} for k in dup_keys}
+
+        for i, p in enumerate(pts):
+            payload = getattr(p, "payload", {}) or {}
+            if i < 3:
+                examples.append({"payload": payload})
+            for k, v in payload.items():
+                key_freq[k] = key_freq.get(k, 0) + 1
+                if isinstance(v, str):
+                    string_key_lengths.setdefault(k, []).append(len(v))
+                if k in dup_counters and v is not None:
+                    d = dup_counters[k]
+                    d[v] = d.get(v, 0) + 1
+
+        # 主テキストキー推定：平均文字長が最大の文字列キー
+        best_key, best_avg = None, -1.0
+        for k, lens in string_key_lengths.items():
+            if not lens:
+                continue
+            avg = sum(lens) / len(lens)
+            if avg > best_avg:
+                best_key, best_avg = k, avg
+
+        inv.payload_key_frequency = key_freq
+        inv.primary_text_key_guess = best_key
+        inv.avg_payload_chars = float(best_avg if best_key else 0.0)
+        inv.max_payload_chars = max(string_key_lengths.get(best_key, [0])) if best_key else 0
+
+        # 欠損率
+        main_keys = ["fqn", "content", "chunk_id", "file_path", "line_start", "line_end"]
+        miss: Dict[str, float] = {}
+        for key in main_keys:
+            missing = 0
+            for p in pts:
+                payload = getattr(p, "payload", {}) or {}
+                if payload.get(key) in (None, ""):
+                    missing += 1
+            miss[key] = (missing / len(pts)) if pts else 0.0
+        inv.missing_rates = miss
+
+        # 重複
+        dup_counts: Dict[str, int] = {}
+        for k, d in dup_counters.items():
+            dup_counts[k] = sum(1 for _, c in d.items() if c > 1)
+        inv.duplicate_keys_checked = dup_keys
+        inv.duplicate_counts = dup_counts
+        inv.examples = examples
+        return inv
+
+    def _safe_to_dict(self, obj: Any) -> Optional[Dict[str, Any]]:
+        try:
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return obj
+            return json.loads(json.dumps(obj, default=lambda o: getattr(o, "__dict__", str(o))))
+        except Exception:
+            return None
+
+    def _render_gaps_md(self, inventories: Dict[str, Any]) -> str:
+        lines: List[str] = []
+        lines.append("# 02_gaps — ギャップ分析\n")
+        for name, inv in inventories.items():
+            lines.append(f"\n## {name}\n")
+            if not inv.get("exists"):
+                lines.append("- ❌ コレクションが存在しません")
+                continue
+            if not inv.get("sparse"):
+                lines.append("- ⚠️ スパースベクトル未導入（BM25/Hybrid不可）")
+            if not inv.get("vectors"):
+                lines.append("- ❌ ベクトル設定なし")
+            if not inv.get("primary_text_key_guess"):
+                lines.append("- ⚠️ 主テキストキーが不明（content/fqn等の整備要）")
+            avg_chars = int(inv.get("avg_payload_chars") or 0)
+            if avg_chars > 2000:
+                lines.append(f"- ⚠️ テキストが長すぎる傾向（平均≈{avg_chars}文字）")
+            dups = inv.get("duplicate_counts", {}) or {}
+            if dups.get("fqn", 0) > 0:
+                lines.append(f"- ⚠️ fqn 重複候補: {dups.get('fqn', 0)}件（サンプル内）")
+            if dups.get("chunk_id", 0) > 0:
+                lines.append(f"- ⚠️ chunk_id 重複候補: {dups.get('chunk_id', 0)}件（サンプル内）")
+            for k, r in (inv.get("missing_rates") or {}).items():
+                if r and r > 0.3:
+                    lines.append(f"- ⚠️ {k} 欠損率 {r:.0%}（要補完）")
+        return "\n".join(lines) + "\n"
+
+    def _render_target_schema_md(self) -> str:
+        return """# 03_target_schema — 理想スキーマ & 埋め込み方針
+
+## rag_documents_ast_functions
+- dense(text): signature_line, fqn, short_doc, extends, ports_params_digest, uses_fqn_topk
+- sparse: signature tokens / identifiers / constants
+- payload: fqn, kind, file_path, line_start, line_end, arity, tags, version, checksum, neighbors.uses
+- 禁止: code_text 全文の格納（長文化回避）
+
+## rag_documents_ast_equations
+- dense(text): equation_str + owner_fqn + section_type + locality
+- sparse: 演算子/識別子/関数名トークン
+- payload: owner_fqn, equation_id, section_type, file_path, line_start, line_end
+- 備考: 同一 owner_fqn に式ヒットが集中時は関数候補へボーナス
+
+## rag_documents_ast_packages
+- dense(text): package name + fqn + short description + exported symbols digest
+- sparse: 公開シンボル名列挙
+- payload: fqn, exports(top-N), doc_summary, version
+
+## rag_documents_pdf
+- dense(text): content + doc_title + section_title + chunk_type + page
+- sparse: 見出し/太字/コードフォント等の語を強調
+- payload: chunk_id, page, chunk_type, contains_tables/figures/formulas, source_document, bbox(optional), prev/next
+- チャンク: 800–1200字、論理単位で分割
+"""
+
+    def _render_migration_plan_md(self) -> str:
+        return """# 04_migration_plan — 段階的再インデックス & alias 切替
+
+1) *_v2 コレクション作成（dense(named "text") + sparse + INT8量子化）
+```python
+from qdrant_client import QdrantClient, models as qm
+c = QdrantClient(url="http://localhost:6333")
+def create_v2(name, dim=1536):
+    c.create_collection(
+        collection_name=name,
+        vectors_config={"text": qm.VectorParams(size=dim, distance=qm.Distance.COSINE)},
+        sparse_vectors_config=qm.SparseVectorParams(),
+        quantization_config=qm.ScalarQuantizationConfig(type=qm.ScalarType.INT8, always_ram=True),
+        optimizers_config=qm.OptimizersConfigDiff(default_segment_number=2)
+    )
+for base in [
+  "rag_documents_ast_equations",
+  "rag_documents_ast_functions",
+  "rag_documents_ast_packages",
+  "rag_documents_pdf",
+]:
+    create_v2(base+"_v2")
+```
+
+2) アップサート（サンプル）
+```python
+from qdrant_client import models as qm
+def upsert_batch(col, rows):
+    pts=[qm.PointStruct(id=r.get("id"), vector={"text": r["embedding_dense"]}, sparse_vector=r.get("embedding_sparse"), payload=r["payload"]) for r in rows]
+    c.upsert(collection_name=col, points=pts)
+```
+
+3) alias 切替とロールバック
+```python
+c.create_alias("rag_documents_ast_functions", "rag_documents_ast_functions_v2")
+c.create_alias("rag_documents_ast_equations", "rag_documents_ast_equations_v2")
+c.create_alias("rag_documents_ast_packages", "rag_documents_ast_packages_v2")
+c.create_alias("rag_documents_pdf", "rag_documents_pdf_v2")
+# 解除: c.delete_alias("rag_documents_ast_functions")
+```
+"""
 
     def analyze_file_structure(self, file_path: str) -> Dict[str, Any]:
         """ファイル構造解析"""
@@ -465,50 +985,106 @@ class VectorManager:
 
     def vectorize_documents(self, file_structures: List[Dict[str, Any]], 
                           progress_callback=None, log_callback=None,
-                          batch_size=128, encode_batch_size=64, max_text_length=1500,
-                          collection_type="mixed") -> bool:
-        """ベクトル化処理"""
+                          batch_size=128, encode_batch_size=64, max_text_length=1500) -> bool:
+        """ベクトル化処理（分離のみ）"""
         try:
             if not self.model:
                 if log_callback:
                     log_callback("モデルを初期化しています...")
                 if not self.initialize_model(self.use_gpu):
                     return False
-            
-            if collection_type == "分離":
-                return self._process_separated_collections(
-                    file_structures, progress_callback, log_callback, 
-                    batch_size, encode_batch_size, max_text_length
-                )
-            else:
-                collection_name = "rag_documents_mixed"
-                self.create_collection(collection_name)
-                return self._process_single_collection(
-                    collection_name, file_structures, progress_callback, 
-                    log_callback, batch_size, encode_batch_size, max_text_length
-                )
+            # 常に分離方式で処理
+            return self._process_separated_collections(
+                file_structures, progress_callback, log_callback, 
+                batch_size, encode_batch_size, max_text_length
+            )
                 
         except Exception as e:
             if log_callback:
                 log_callback(f"ベクトル化エラー: {e}")
             return False
+    
+    def _identify_ast_file_type(self, file_path: str) -> str:
+        """ASTファイルのタイプを判定
+        
+        Args:
+            file_path: ファイルパス
+            
+        Returns:
+            str: "packages" | "functions" | "equations" | "unknown"
+        """
+        basename = os.path.basename(file_path).lower()
+        
+        if "ast_packages" in basename or basename == "packages.jsonl":
+            return "packages"
+        elif "ast_functions" in basename or basename == "functions.jsonl":
+            return "functions"
+        elif "ast_equations" in basename or basename == "equations.jsonl":
+            return "equations"
+        else:
+            return "unknown"
 
     def _process_separated_collections(self, file_structures, progress_callback, log_callback, 
                                      batch_size, encode_batch_size, max_text_length):
-        """分離処理"""
-        ast_files = [f for f in file_structures if f['file_path'].endswith('.jsonl')]
-        pdf_files = [f for f in file_structures if f['file_path'].endswith('.json')]
+        """分離処理（3つのASTコレクション + PDFコレクション）"""
+        # ファイルをタイプ別に分類
+        ast_packages_files = []
+        ast_functions_files = []
+        ast_equations_files = []
+        pdf_files = []
+        
+        for f in file_structures:
+            file_path = f['file_path']
+            
+            if file_path.endswith('.jsonl'):
+                # ASTファイルをタイプ別に分類
+                ast_type = self._identify_ast_file_type(file_path)
+                if ast_type == "packages":
+                    ast_packages_files.append(f)
+                elif ast_type == "functions":
+                    ast_functions_files.append(f)
+                elif ast_type == "equations":
+                    ast_equations_files.append(f)
+                else:
+                    # タイプ不明なJSONLは警告してスキップ
+                    if log_callback:
+                        log_callback(f"警告: ファイルタイプを判定できませんでした: {os.path.basename(file_path)}")
+            elif file_path.endswith('.json'):
+                pdf_files.append(f)
         
         success_count = 0
         
-        if ast_files:
+        # AST Packagesコレクション
+        if ast_packages_files:
             if log_callback:
-                log_callback(f"AST専用コレクションを処理中... ({len(ast_files)}ファイル)")
-            self.create_collection("rag_documents_ast")
-            if self._process_single_collection("rag_documents_ast", ast_files, progress_callback, 
-                                             log_callback, batch_size, encode_batch_size, max_text_length):
+                log_callback(f"AST Packages専用コレクションを処理中... ({len(ast_packages_files)}ファイル)")
+            self.create_collection("rag_documents_ast_packages")
+            if self._process_single_collection("rag_documents_ast_packages", ast_packages_files, 
+                                             progress_callback, log_callback, batch_size, 
+                                             encode_batch_size, max_text_length):
                 success_count += 1
         
+        # AST Functionsコレクション
+        if ast_functions_files:
+            if log_callback:
+                log_callback(f"AST Functions専用コレクションを処理中... ({len(ast_functions_files)}ファイル)")
+            self.create_collection("rag_documents_ast_functions")
+            if self._process_single_collection("rag_documents_ast_functions", ast_functions_files,
+                                             progress_callback, log_callback, batch_size,
+                                             encode_batch_size, max_text_length):
+                success_count += 1
+        
+        # AST Equationsコレクション
+        if ast_equations_files:
+            if log_callback:
+                log_callback(f"AST Equations専用コレクションを処理中... ({len(ast_equations_files)}ファイル)")
+            self.create_collection("rag_documents_ast_equations")
+            if self._process_single_collection("rag_documents_ast_equations", ast_equations_files,
+                                             progress_callback, log_callback, batch_size,
+                                             encode_batch_size, max_text_length):
+                success_count += 1
+        
+        # PDFコレクション
         if pdf_files:
             if log_callback:
                 log_callback(f"PDF専用コレクションを処理中... ({len(pdf_files)}ファイル)")
@@ -521,11 +1097,13 @@ class VectorManager:
 
     def _process_single_collection(self, collection_name, file_structures, progress_callback, 
                                  log_callback, batch_size, encode_batch_size, max_text_length):
-        """単一コレクション処理"""
+        """単一コレクション処理（重複チェック付き）"""
         try:
             total_vectors = 0
             total_entries = sum(s.get('total_entries', 0) for s in file_structures)
             processed_entries = 0
+            skipped_files = 0
+            added_files = 0
             
             for file_idx, structure in enumerate(file_structures):
                 file_path = structure['file_path']
@@ -535,6 +1113,19 @@ class VectorManager:
                 
                 if log_callback:
                     log_callback(f"処理中: {os.path.basename(file_path)} ({file_entries}エントリー)")
+                
+                # ファイル単位で重複チェック
+                if self.check_file_exists(collection_name, file_hash):
+                    skipped_files += 1
+                    processed_entries += file_entries
+                    if log_callback:
+                        log_callback(f"スキップ: {os.path.basename(file_path)} (既に処理済み)")
+                    
+                    # プログレスバー更新
+                    if progress_callback and total_entries > 0:
+                        progress_percent = int((processed_entries / total_entries) * 70) + 30
+                        progress_callback(progress_percent)
+                    continue
                 
                 extracted_texts = self.extract_texts_from_structure(file_path, text_fields)
                 
@@ -592,13 +1183,16 @@ class VectorManager:
                             log_callback(f"バッチ処理エラー: {batch_error}")
                         continue
                 
-                if log_callback:
-                    log_callback(f"{os.path.basename(file_path)} 完了: {file_vectors}ベクトル")
+                if file_vectors > 0:
+                    added_files += 1
+                    if log_callback:
+                        log_callback(f"{os.path.basename(file_path)} 完了: {file_vectors}ベクトル")
             
             if log_callback:
                 log_callback(f"ベクトル化完了: 総計 {total_vectors} ベクトル")
+                log_callback(f"結果: 追加 {added_files}ファイル, スキップ {skipped_files}ファイル")
             
-            return total_vectors > 0
+            return total_vectors > 0 or skipped_files > 0
             
         except Exception as e:
             if log_callback:

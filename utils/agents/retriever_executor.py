@@ -32,11 +32,9 @@ class RetrieverExecutor(BaseAgentExecutor):
         if not optimized_query:
             return self._create_error_result("検索クエリなし", node_id)
         
-        # VERBOSEレベル判定
+        # VERBOSEレベル判定（ノード別設定のみ反映）
         log_name = f"retriever_{node_id_str}"
-        is_verbose = (hasattr(self.log, '_agent_levels') and 
-                     (self.log._agent_levels.get(log_name) == LogLevel.VERBOSE or
-                      self.log._agent_levels.get('retriever') == LogLevel.VERBOSE))
+        is_verbose = self.log.should_log(log_name, LogLevel.VERBOSE)
         
         # ログ出力
         if is_verbose:
@@ -49,7 +47,7 @@ class RetrieverExecutor(BaseAgentExecutor):
         initial_k = self._get_threshold("initial_k") if use_reranker else self._get_threshold("search_k")
         final_k = self._get_threshold("search_k")
         similarity_threshold = self._get_threshold("similarity_threshold")
-        target_collections = self._determine_target_collections()
+        target_collections = self._determine_target_collections_strict()
         
         if not target_collections:
             return self._create_error_result("利用可能なコレクションなし", node_id)
@@ -216,6 +214,26 @@ class RetrieverExecutor(BaseAgentExecutor):
         available_collections = self.vector_manager.list_collections()
         return [c for c in available_collections if self._has_data(c)]
     
+    def _determine_target_collections_strict(self) -> List[str]:
+        """Determine target collections strictly (no fallback)."""
+        try:
+            tc = self._get_threshold("target_collections")
+        except Exception:
+            return []
+
+        # normalize: accept str or list[str]
+        if isinstance(tc, str):
+            tc = [tc]
+        if not isinstance(tc, list) or not tc:
+            return []
+
+        # validate each collection exists and has data
+        for name in tc:
+            if not isinstance(name, str) or not self._has_data(name):
+                return []
+
+        return tc
+
     def _has_data(self, collection_name: str) -> bool:
         """コレクションにデータが存在するか確認"""
         try:

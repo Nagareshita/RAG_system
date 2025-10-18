@@ -5,6 +5,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent_designer.ui.canvas_manager import CanvasManager
+from copy import deepcopy
 from agent_designer.ui.mouse_handler import MouseHandler
 from agent_designer.ui.node_settings import NodeSettingsManager
 from agent_designer.ui.file_operations import FileOperations
@@ -117,7 +118,7 @@ class AgentDesigner:
             'id': node_id,
             'type': agent_type,
             'pos': (100 + len(self.nodes) * 30, 100 + len(self.nodes) * 30),
-            'config': default_config.copy()
+            'config': deepcopy(default_config)
         }
         
         self.nodes.append(new_node)

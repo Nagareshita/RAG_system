@@ -16,9 +16,12 @@ class VectorizationTab(QWidget):
         # シングルトンインスタンスを取得
         self.vector_manager = VectorManager()
         self.selected_files = []
+        self.search_config_file = "configs/vectorization_search_settings.json"
         self.setup_ui()
         # 初期値で自動計算実行
         self.update_encode_batch()
+        # 検索設定を自動読み込み
+        self.load_search_settings()
     
     def setup_ui(self):
         layout = QVBoxLayout()
@@ -143,7 +146,10 @@ class VectorizationTab(QWidget):
         row.addWidget(QLabel("クエリ:"))
         self.search_query = QLineEdit()
         self.search_query.setToolTip("検索したいキーワード。例: IF97 密度 p s / Rotational support tau など")
-        row.addWidget(self.search_query)
+        row.addWidget(self.search_query, stretch=7)  # 横幅を少し小さく
+        self.search_button = QPushButton("検索")
+        self.search_button.clicked.connect(self.run_search)
+        row.addWidget(self.search_button, stretch=1)  # 右横に配置
         search_layout.addLayout(row)
 
         # 最適化オプション
@@ -187,20 +193,17 @@ class VectorizationTab(QWidget):
         self.search_use_reranker.setChecked(True)
         self.search_use_reranker.setToolTip("クロスエンコーダで上位候補を文脈で再評価。精度↑だが時間増")
         row2.addWidget(self.search_use_reranker)
-        self.search_button = QPushButton("検索")
-        self.search_button.clicked.connect(self.run_search)
-        row2.addWidget(self.search_button)
         search_layout.addLayout(row2)
 
-        # 横断検索の選択（AST3種+PDF）
+        # 検索対象の選択（AST3種+PDF）
         cross_row = QHBoxLayout()
-        cross_row.addWidget(QLabel("横断検索:"))
+        cross_row.addWidget(QLabel("検索対象:"))
         self.chk_ast_pkgs = QCheckBox("packages")
         self.chk_ast_funcs = QCheckBox("functions")
         self.chk_ast_eqs = QCheckBox("equations")
         self.chk_pdf = QCheckBox("pdf")
         tip_cross = (
-            "横断検索: 選択した複数コレクション（ASTの3種+PDF）をまたいで候補を収集。\n"
+            "検索対象: 選択した複数コレクション（ASTの3種+PDF）をまたいで候補を収集。\n"
             "処理: 各コレクションでDense検索→候補を統合→（任意で擬似ハイブリッド）→再ランク"
         )
         for w in [self.chk_ast_pkgs, self.chk_ast_funcs, self.chk_ast_eqs, self.chk_pdf]:
@@ -256,6 +259,14 @@ class VectorizationTab(QWidget):
         tune_row.addWidget(self.search_show_timings)
         search_layout.addLayout(tune_row)
 
+        # 検索設定保存ボタン
+        save_search_layout = QHBoxLayout()
+        self.save_search_button = QPushButton("検索設定を保存")
+        self.save_search_button.clicked.connect(self.save_search_settings)
+        self.save_search_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        save_search_layout.addWidget(self.save_search_button)
+        search_layout.addLayout(save_search_layout)
+
         # 結果タブ
         results_widget = QWidget()
         results_layout = QVBoxLayout(results_widget)
@@ -297,7 +308,7 @@ class VectorizationTab(QWidget):
             alpha = float(self.search_mix_alpha.value())
             preview_len = self.search_preview_len.value()
             show_timings = self.search_show_timings.isChecked()
-            # 横断の選択
+            # 検索対象の選択
             cross_cols = []
             if self.chk_ast_pkgs.isChecked():
                 cross_cols.append("rag_documents_ast_packages")
@@ -315,7 +326,9 @@ class VectorizationTab(QWidget):
                 self.log_text.append("検索クエリが空です")
                 return
             if not use_cross:
-                self.log_text.append("対象コレクションを選択してください（packages/functions/equations/pdf）")
+                # ポップアップを表示
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "検索対象未選択", "検索対象コレクションを選択してください")
                 return
 
             # ログ: 検索開始
@@ -338,18 +351,25 @@ class VectorizationTab(QWidget):
             # クエリ最適化（候補数=1固定）
             q = q_raw
             if self.chk_optimize_query.isChecked():
-                # フォーカス推定: functions > equations > packages > pdf（最初に選ばれたもの）
-                focus = "functions"
-                for name, f in [("packages", self.chk_ast_pkgs), ("functions", self.chk_ast_funcs), ("equations", self.chk_ast_eqs), ("pdf", self.chk_pdf)]:
-                    if f.isChecked():
-                        focus = name
-                        break
+                # フォーカス推定: 優先順位 functions > equations > packages > pdf
+                # 複数選択時は、最も具体的なもの（functions）を優先
+                focus = "general"  # デフォルト
+                if self.chk_pdf.isChecked():
+                    focus = "pdf"
+                if self.chk_ast_pkgs.isChecked():
+                    focus = "packages"
+                if self.chk_ast_eqs.isChecked():
+                    focus = "equations"
+                if self.chk_ast_funcs.isChecked():
+                    focus = "functions"
+                
                 preset = self.combo_opt_preset.currentText()
                 try:
                     self.log_text.append(f"[最適化] 実行: focus={focus}, preset={preset}")
                     self._update_search_progress("クエリ最適化中…")
                     q = optimize_query(q_raw, focus=focus, preset=preset, use_vlm=True)
-                    self.log_text.append(f"[最適化] 完了: {q}")
+                    self.log_text.append(f"[最適化] 元クエリ: {q_raw[:50]}{'...' if len(q_raw) > 50 else ''}")
+                    self.log_text.append(f"[最適化] 最適化後: {q}")
                 except Exception as e:
                     self.log_text.append(f"[最適化] エラー: {e}")
                     self._close_search_progress()
@@ -363,7 +383,7 @@ class VectorizationTab(QWidget):
                     self.log_text.append("[検索] 再ランクモデル初期化に失敗。再ランクなしで続行")
                     use_reranker = False
 
-            # Dense検索（横断で候補統合）
+            # Dense検索（検索対象で候補統合）
             import time
             self.log_text.append("[検索] Dense検索を実行中…")
             self._update_search_progress("Dense検索実行中…")
@@ -704,3 +724,104 @@ class VectorizationTab(QWidget):
             self.log_text.append(error_msg)
             self.progress_bar.setValue(0)
             print(f"詳細エラー: {e}")
+
+    def save_search_settings(self):
+        """検索設定をJSONファイルに保存"""
+        try:
+            import json
+            
+            settings = {
+                # 検索設定
+                "dense_topk": self.search_topk.value(),
+                "final_k": self.search_finalk.value(),
+                "threshold": self.search_threshold.value(),
+                "use_reranker": self.search_use_reranker.isChecked(),
+                "reranker_model": self.search_reranker_model.currentText(),
+                "mix_alpha": self.search_mix_alpha.value(),
+                "preview_len": self.search_preview_len.value(),
+                "show_timings": self.search_show_timings.isChecked(),
+                
+                # クエリ最適化
+                "optimize_query": self.chk_optimize_query.isChecked(),
+                "opt_preset": self.combo_opt_preset.currentText(),
+                
+                # 検索対象
+                "search_target": {
+                    "ast_packages": self.chk_ast_pkgs.isChecked(),
+                    "ast_functions": self.chk_ast_funcs.isChecked(),
+                    "ast_equations": self.chk_ast_eqs.isChecked(),
+                    "pdf": self.chk_pdf.isChecked()
+                }
+            }
+            
+            # configsフォルダが存在しない場合は作成
+            import os
+            os.makedirs(os.path.dirname(self.search_config_file), exist_ok=True)
+            
+            # JSONファイルに保存
+            with open(self.search_config_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            
+            self.log_text.append(f"✅ 検索設定を保存しました: {self.search_config_file}")
+            
+        except Exception as e:
+            self.log_text.append(f"❌ 検索設定保存エラー: {str(e)}")
+
+    def load_search_settings(self):
+        """JSONファイルから検索設定を読み込み"""
+        try:
+            import json
+            import os
+            
+            if not os.path.exists(self.search_config_file):
+                self.log_text.append("ℹ️ 検索設定ファイルが見つかりません。デフォルト設定を使用します。")
+                return
+            
+            with open(self.search_config_file, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            
+            # 検索設定の復元
+            if "dense_topk" in settings:
+                self.search_topk.setValue(settings["dense_topk"])
+            if "final_k" in settings:
+                self.search_finalk.setValue(settings["final_k"])
+            if "threshold" in settings:
+                self.search_threshold.setValue(settings["threshold"])
+            if "use_reranker" in settings:
+                self.search_use_reranker.setChecked(settings["use_reranker"])
+            if "reranker_model" in settings:
+                index = self.search_reranker_model.findText(settings["reranker_model"])
+                if index >= 0:
+                    self.search_reranker_model.setCurrentIndex(index)
+            if "mix_alpha" in settings:
+                self.search_mix_alpha.setValue(settings["mix_alpha"])
+            if "preview_len" in settings:
+                self.search_preview_len.setValue(settings["preview_len"])
+            if "show_timings" in settings:
+                self.search_show_timings.setChecked(settings["show_timings"])
+            
+            # クエリ最適化
+            if "optimize_query" in settings:
+                self.chk_optimize_query.setChecked(settings["optimize_query"])
+            if "opt_preset" in settings:
+                index = self.combo_opt_preset.findText(settings["opt_preset"])
+                if index >= 0:
+                    self.combo_opt_preset.setCurrentIndex(index)
+            
+            # 検索対象
+            if "search_target" in settings:
+                target = settings["search_target"]
+                if "ast_packages" in target:
+                    self.chk_ast_pkgs.setChecked(target["ast_packages"])
+                if "ast_functions" in target:
+                    self.chk_ast_funcs.setChecked(target["ast_functions"])
+                if "ast_equations" in target:
+                    self.chk_ast_eqs.setChecked(target["ast_equations"])
+                if "pdf" in target:
+                    self.chk_pdf.setChecked(target["pdf"])
+            
+            self.log_text.append(f"✅ 検索設定を読み込みました: {self.search_config_file}")
+            
+        except Exception as e:
+            self.log_text.append(f"⚠️ 検索設定読み込みエラー: {str(e)}")
+

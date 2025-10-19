@@ -19,7 +19,6 @@ from PySide6.QtCore import QThread, Signal, Qt
 from pymupdf_converter.llm_models import ProcessedDocument
 from pymupdf_converter.control_panel import ControlPanel
 from pymupdf_converter.result_viewer import ResultViewer
-from pymupdf_converter.pdf_processor import PDFProcessorWorker
 
 class PDFParserTab(QWidget):
     """PDF解析タブ"""
@@ -60,6 +59,9 @@ class PDFParserTab(QWidget):
         self.control_panel.set_processing_state(True)
         
         # ワーカー開始
+        # 重い依存関係（pymupdf4llm / torch / transformers など）を
+        # アプリ起動時ではなく実行時に読み込むため、ここで遅延インポートする
+        from pymupdf_converter.pdf_processor import PDFProcessorWorker
         self.worker = PDFProcessorWorker(settings)
         self.worker.progress_updated.connect(self.control_panel.update_status)
         self.worker.processing_completed.connect(self._on_processing_completed)

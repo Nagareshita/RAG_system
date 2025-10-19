@@ -1,0 +1,378 @@
+# WSLにログイン
+wsl
+
+# Mambaのインストール（初回のみ）
+cd ~
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh 
+bash Miniforge3-Linux-x86_64.sh 
+・・・全てyes
+source ~/.bashrc
+・・・上で追加されたMiniforgeのPATH設定がすぐ反映される（再起動せずにすぐ使えるようになる）
+
+# OpenHands環境の作成（mambaを使い仮想環境で）
+mamba create -n openhands python=3.12 -y
+mamba activate openhands
+pip install openhands-ai azure-identity
+# 作業ディレクトリを作成
+mkdir -p ~/openhands_workspace
+
+#ログイン
+az login
+
+
+VSCにWSL（Microsoft）入れておく
+左下の><　をクリックしてconnect to WSLを選択
+ファイル→フォルダーを開く
+
+【CLI認証するためにコードをいじる（MITライセンス。著作権表示すればOK）】
+#どこにあるか確認
+python -c "import openhands; print(openhands.__file__)"
+#左の通り、ファイルを編集する。
+
+【CLI認証の場合】
+# Azure CLIのインストール
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+# Azureにログイン
+az login
+・・・サブスクリプションを聞かれるので番号で入力
+# 確認
+az account show
+# 自分のPrincipal IDを取得
+PRINCIPAL_ID=$(az ad signed-in-user show --query id -o tsv)
+# サブスクリプションID（Azure Portalから確認）
+SUBSCRIPTION_ID="サブスクリプションID"
+
+# リソースグループ名
+RESOURCE_GROUP="リソースグループ名"
+# ロールを割り当て
+az role assignment create \
+  --role "Cognitive Services OpenAI User" \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --scope /subscriptions/"$SUBSCRIPTION_ID"/resourceGroups/"$RESOURCE_GROUP" \
+  --assignee-principal-type User
+
+Azure OpenAI関連の主なロール
+
+ロール名	ロールID	用途
+Cognitive Services OpenAI User	5e0bd9bd-7b93-4f28-af87-19fc36ad61bd	API呼び出し（推奨）
+Cognitive Services OpenAI Contributor	a001fd3d-188f-4b5d-821b-7da978bf7442	モデル管理も可能
+Cognitive Services Contributor	25fbc0a9-bd7c-42a3-aa1a-3b75d497ee68	全権限
+Owner	8e3af657-a8ff-443c-a75c-2fe8c4bcb635	最上位権限
+
+# ディレクトリを作成
+mkdir -p ~/.openhands
+
+# config.toml を作成
+cat > ~/.openhands/config.toml << 'EOF'
+[core]
+workspace_base = "/home/nagareshita/openhands_workspace"
+workspace_mount_path = "/home/nagareshita/openhands_workspace"
+
+[llm]
+model = "azure/gpt-4o"
+base_url = "https://ragllm-dev.openai.azure.com/"
+api_version = "2024-02-15-preview"
+api_key = ""
+custom_llm_provider = "azure"
+
+[agent]
+name = "CodeActAgent"
+function_calling = true
+
+[sandbox]
+trusted_dirs = [ "/mnt/c/git/RAG_system/test", "/home/nagareshita/openhands_workspace",]
+EOF
+
+# 作成されたか確認
+cat ~/.openhands/config.toml
+
+# ワークスペースディレクトリに移動
+cd ~/openhands_workspace
+
+# OpenHandsを起動
+openhands
+
+【openhandsの設定を削除するとき】
+rm -rf ~/.openhands
+
+
+
+【コード修正】
+
+
+### ステップ3: コード修正（3ファイル）
+#### ファイル1: `llm.py`
+場所を確認：
+```bash
+find ~/miniforge3/envs -name "llm.py" | grep openhands/llm/llm.py | head -1
+```
+出力例：
+```
+/home/nagareshita/miniforge3/envs/openhands/lib/python3.12/site-packages/openhands/llm/llm.py
+```
+このファイルを編集：
+```bash
+nano /home/nagareshita/miniforge3/envs/openhands/lib/python3.12/site-packages/openhands/llm/llm.py
+```
+**ファイルの先頭（7行目あたり、`import httpx`の後）に以下を追加：**
+```python
+# Azure CLI authentication support
+_azure_token_provider = None
+try:
+    if os.environ.get('USE_AZURE_CLI_AUTH') == 'true':
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+        _azure_credential = DefaultAzureCredential()
+        _azure_token_provider = get_bearer_token_provider(
+            _azure_credential,
+            "https://cognitiveservices.azure.com/.default"
+        )
+        print("? Azure CLI authentication loaded!")
+    else:
+        _azure_token_provider = None
+except Exception as e:
+    print(f"?? Azure auth failed: {e}")
+    _azure_token_provider = None
+```
+**`self._completion = partial(` の部分（200行目あたり）を探して、以下に置き換え：**
+置き換え前：
+```python
+        self._completion = partial(
+            litellm_completion,
+            model=self.config.model,
+            api_key=self.config.api_key.get_secret_value()
+            if self.config.api_key
+            else None,
+            base_url=self.config.base_url,
+            api_version=self.config.api_version,
+            custom_llm_provider=self.config.custom_llm_provider,
+            timeout=self.config.timeout,
+            drop_params=self.config.drop_params,
+            seed=self.config.seed,
+            **kwargs,
+        )
+```
+置き換え後：
+```python
+        # Determine if we should use Azure CLI authentication
+        use_azure_cli_auth = (
+            self.config.model.startswith('azure/') and 
+            _azure_token_provider is not None
+        )
+        
+        if use_azure_cli_auth:
+            # Use Azure CLI authentication instead of API key
+            self._completion = partial(
+                litellm_completion,
+                model=self.config.model,
+                azure_ad_token_provider=_azure_token_provider,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                timeout=self.config.timeout,
+                drop_params=self.config.drop_params,
+                seed=self.config.seed,
+                **kwargs,
+            )
+            logger.debug(f'Using Azure CLI authentication for model: {self.config.model}')
+        else:
+            # Use regular API key authentication
+            self._completion = partial(
+                litellm_completion,
+                model=self.config.model,
+                api_key=self.config.api_key.get_secret_value()
+                if self.config.api_key
+                else None,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                timeout=self.config.timeout,
+                drop_params=self.config.drop_params,
+                seed=self.config.seed,
+                **kwargs,
+            )
+```
+保存して終了（nano: `Ctrl+O` → `Enter` → `Ctrl+X`）
+---
+#### ファイル2: `async_llm.py`
+場所を確認：
+```bash
+find ~/miniforge3/envs -name "async_llm.py" | grep openhands/llm/async_llm.py | head -1
+```
+このファイルを編集：
+```bash
+nano /home/nagareshita/miniforge3/envs/openhands/lib/python3.12/site-packages/openhands/llm/async_llm.py
+```
+**importセクション（11行目あたり）を修正：**
+置き換え前：
+```python
+from openhands.llm.llm import (
+    LLM,
+    LLM_RETRY_EXCEPTIONS,
+)
+```
+置き換え後：
+```python
+from openhands.llm.llm import (
+    LLM,
+    LLM_RETRY_EXCEPTIONS,
+    _azure_token_provider,
+)
+```
+**`def __init__` の中の `self._async_completion = partial(` の部分（23行目あたり）を探して、以下に置き換え：**
+置き換え前：
+```python
+        self._async_completion = partial(
+            self._call_acompletion,
+            model=self.config.model,
+            api_key=self.config.api_key.get_secret_value()
+            if self.config.api_key
+            else None,
+            base_url=self.config.base_url,
+            api_version=self.config.api_version,
+            custom_llm_provider=self.config.custom_llm_provider,
+            max_tokens=self.config.max_output_tokens,
+            timeout=self.config.timeout,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            drop_params=self.config.drop_params,
+            seed=self.config.seed,
+        )
+```
+置き換え後：
+```python
+        # Determine if we should use Azure CLI authentication
+        use_azure_cli_auth = (
+            self.config.model.startswith('azure/') and 
+            _azure_token_provider is not None
+        )
+        if use_azure_cli_auth:
+            self._async_completion = partial(
+                self._call_acompletion,
+                model=self.config.model,
+                azure_ad_token_provider=_azure_token_provider,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                max_tokens=self.config.max_output_tokens,
+                timeout=self.config.timeout,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                drop_params=self.config.drop_params,
+                seed=self.config.seed,
+            )
+            logger.debug(f'Using Azure CLI authentication for async model: {self.config.model}')
+        else:
+            self._async_completion = partial(
+                self._call_acompletion,
+                model=self.config.model,
+                api_key=self.config.api_key.get_secret_value()
+                if self.config.api_key
+                else None,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                max_tokens=self.config.max_output_tokens,
+                timeout=self.config.timeout,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                drop_params=self.config.drop_params,
+                seed=self.config.seed,
+            )
+```
+保存して終了
+---
+#### ファイル3: `streaming_llm.py`
+場所を確認：
+```bash
+find ~/miniforge3/envs -name "streaming_llm.py" | grep openhands/llm/streaming_llm.py | head -1
+```
+このファイルを編集：
+```bash
+nano /home/nagareshita/miniforge3/envs/openhands/lib/python3.12/site-packages/openhands/llm/streaming_llm.py
+```
+**importセクション（7行目あたり）を修正：**
+置き換え前：
+```python
+from openhands.llm.async_llm import LLM_RETRY_EXCEPTIONS, AsyncLLM
+from openhands.llm.model_features import get_features
+```
+置き換え後：
+```python
+from openhands.llm.async_llm import LLM_RETRY_EXCEPTIONS, AsyncLLM
+from openhands.llm.llm import _azure_token_provider
+from openhands.llm.model_features import get_features
+```
+**`def __init__` の中の `self._async_streaming_completion = partial(` の部分（17行目あたり）を探して、以下に置き換え：**
+置き換え前：
+```python
+        self._async_streaming_completion = partial(
+            self._call_acompletion,
+            model=self.config.model,
+            api_key=self.config.api_key.get_secret_value()
+            if self.config.api_key
+            else None,
+            base_url=self.config.base_url,
+            api_version=self.config.api_version,
+            custom_llm_provider=self.config.custom_llm_provider,
+            max_tokens=self.config.max_output_tokens,
+            timeout=self.config.timeout,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            drop_params=self.config.drop_params,
+            stream=True,
+        )
+```
+置き換え後：
+```python
+        # Determine if we should use Azure CLI authentication
+        use_azure_cli_auth = (
+            self.config.model.startswith('azure/') and 
+            _azure_token_provider is not None
+        )
+        if use_azure_cli_auth:
+            self._async_streaming_completion = partial(
+                self._call_acompletion,
+                model=self.config.model,
+                azure_ad_token_provider=_azure_token_provider,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                max_tokens=self.config.max_output_tokens,
+                timeout=self.config.timeout,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                drop_params=self.config.drop_params,
+                stream=True,
+            )
+            logger.debug(f'Using Azure CLI authentication for streaming model: {self.config.model}')
+        else:
+            self._async_streaming_completion = partial(
+                self._call_acompletion,
+                model=self.config.model,
+                api_key=self.config.api_key.get_secret_value()
+                if self.config.api_key
+                else None,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                max_tokens=self.config.max_output_tokens,
+                timeout=self.config.timeout,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                drop_params=self.config.drop_params,
+                stream=True,
+            )
+```
+保存して終了
+---
+### ステップ4: 環境変数設定
+```bash
+echo 'export USE_AZURE_CLI_AUTH=true' >> ~/.bashrc
+source ~/.bashrc
+```
+確認：
+```bash
+echo $USE_AZURE_CLI_AUTH
+# 出力: true
+```
+

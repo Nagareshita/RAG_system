@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "your-server-name": {
+      "command": "python",
+      "args": ["/絶対パス/server.py"],
+      "env": {
+        "QDRANT_URL": "～接続先URL～",
+        "QDRANT_COLLECTION": "～コレクション名～"
+      }
+    }
+  }
+}

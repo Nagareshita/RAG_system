@@ -212,42 +212,66 @@ class LoginTab(QWidget):
 
     def check_azure_auth(self):
         """Azure CLI認証状態を確認"""
-        import subprocess
         try:
+            # Windowsではshell=Trueを使用してコマンドを実行
+            # encoding='cp932'で日本語Windowsの文字コードを正しく処理
             result = subprocess.run(['az', 'account', 'show'], 
-                                capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                account_info = json.loads(result.stdout)
-                user_name = account_info.get('user', {}).get('name', 'Unknown')
-                self.auth_status_label.setText(f"認証状態: ログイン済み ({user_name})")
-                self.auth_status_label.setStyleSheet("color: green;")
-                self.log_text.append(f"✅ Azure認証確認: {user_name}")
+                                capture_output=True, text=True, encoding='cp932', 
+                                errors='replace', timeout=10, shell=True)
+            
+            if result.returncode == 0 and result.stdout and result.stdout.strip():
+                try:
+                    account_info = json.loads(result.stdout)
+                    user_name = account_info.get('user', {}).get('name', 'Unknown')
+                    subscription_name = account_info.get('name', 'Unknown')
+                    
+                    self.auth_status_label.setText(
+                        f"認証状態: ログイン済み\nユーザー: {user_name}\nサブスクリプション: {subscription_name}"
+                    )
+                    self.auth_status_label.setStyleSheet("color: green;")
+                    self.log_text.append(f"✅ Azure認証確認: {user_name} ({subscription_name})")
+                    return True
+                except json.JSONDecodeError:
+                    self.auth_status_label.setText("認証状態: 情報取得エラー")
+                    self.auth_status_label.setStyleSheet("color: orange;")
+                    self.log_text.append("⚠️ Azure認証情報のパースに失敗しました")
+                    return False
             else:
                 self.auth_status_label.setText("認証状態: ログインが必要")
                 self.auth_status_label.setStyleSheet("color: red;")
-                self.log_text.append("❌ Azure認証が必要です")
+                if result.stderr:
+                    self.log_text.append(f"❌ Azure認証が必要です: {result.stderr}")
+                else:
+                    self.log_text.append("❌ Azure認証が必要です")
+                return False
+                
         except subprocess.TimeoutExpired:
             self.auth_status_label.setText("認証状態: タイムアウト")
             self.auth_status_label.setStyleSheet("color: orange;")
             self.log_text.append("⚠️ Azure CLI認証確認がタイムアウトしました")
+            return False
         except FileNotFoundError:
             self.auth_status_label.setText("認証状態: Azure CLI未インストール")
             self.auth_status_label.setStyleSheet("color: red;")
             self.log_text.append("❌ Azure CLIがインストールされていません")
+            self.log_text.append("https://docs.microsoft.com/cli/azure/install-azure-cli からインストールしてください")
+            return False
         except Exception as e:
             self.auth_status_label.setText(f"認証状態: エラー")
             self.auth_status_label.setStyleSheet("color: red;")
             self.log_text.append(f"❌ Azure認証確認エラー: {str(e)}")
+            return False
 
     def azure_login(self):
         """Azure CLIログイン（ブラウザ認証）"""
-        import subprocess
         try:
             self.log_text.append("🌐 ブラウザでAzure認証を開始します...")
             
-            # ブラウザ認証でログイン
+            # Windowsではshell=Trueを使用してコマンドを実行
+            # encoding='cp932'で日本語Windowsの文字コードを正しく処理
             result = subprocess.run(['az', 'login'], 
-                                capture_output=True, text=True, timeout=120)
+                                capture_output=True, text=True, encoding='cp932',
+                                errors='replace', timeout=120, shell=True)
             
             if result.returncode == 0:
                 self.log_text.append("✅ Azure認証が完了しました")
@@ -265,10 +289,12 @@ class LoginTab(QWidget):
 
     def azure_logout(self):
         """Azure CLIログアウト"""
-        import subprocess
         try:
+            # Windowsではshell=Trueを使用してコマンドを実行
+            # encoding='cp932'で日本語Windowsの文字コードを正しく処理
             result = subprocess.run(['az', 'logout'], 
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, encoding='cp932',
+                                errors='replace', timeout=30, shell=True)
             
             if result.returncode == 0:
                 self.log_text.append("✅ Azureからログアウトしました")

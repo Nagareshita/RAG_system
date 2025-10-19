@@ -1,0 +1,18 @@
+{
+  "dense_topk": 50,
+  "final_k": 15,
+  "threshold": 0.0,
+  "use_reranker": true,
+  "reranker_model": "BAAI/bge-reranker-large",
+  "mix_alpha": 1.0,
+  "preview_len": 120,
+  "show_timings": true,
+  "optimize_query": true,
+  "opt_preset": "qa",
+  "search_target": {
+    "ast_packages": true,
+    "ast_functions": false,
+    "ast_equations": false,
+    "pdf": false
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "omc": {
+    "use_loadModel": true,
+    "modelica_stdlib_version": "4.0.0",
+    "modelica_stdlib_package_template": null,
+    "extra_library_paths": []
+  },
+  "libraries": {
+    "libraries_root_dir": "library-OM",
+    "libraries_json": "json_files/libraries.json"
+  },
+  "generation": {
+    "enable_rag": true,
+    "docs_dir": "GRAG/docs",
+    "rag_persist_dir": "GRAG/storage_Pgraph_modelica_all-4",
+    "embed_model": "local:/xxx/GRAG/BAAI/bge-large-en-v1.5",
+    "llm_provider": "local_hf",
+    "llm_model": "CodeLlama-7b-Instruct-hf",
+    "llm_model_path": "/path/to/CodeLlama-7b-Instruct-hf",
+    "temperature": 0.3,
+    "max_new_tokens": 800,
+    "num_runs": 1,
+    "mode": "model",
+    "output_dir_template": "generation_example/{mode}_result/codellama/output-{model_size}b-Grag",
+    "model_size_label": "7",
+    "openai_api_base": null,
+    "openai_api_key": null,
+    "openai_api_version": null,
+    "openai_deployment": null,
+    "apim_subscription_key_header": null,
+    "apim_subscription_key": null
+  },
+  "validation": {
+    "input_txt_dir": "generation_example/result_instance/starcoder2/7B/output-7b",
+    "processed_mo_dir": "generation_example/result_instance/starcoder2/7B/model-7b",
+    "simulation_base_dir": "generation_example/result_instance/starcoder2/7B/simulation",
+    "results_base_dir": "generation_example/result_instance/starcoder2/7B",
+    "reference_instance_csv": "reference_instance/simulation_durations.csv"
+  }
+}
+
